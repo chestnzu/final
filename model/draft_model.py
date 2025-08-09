@@ -1,0 +1,39 @@
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.preprocessing import LabelEncoder
+from defined_functions import *
+from data_processing import *
+
+
+goa_path="../data/goa_human.gaf"
+sequence_path='../data/train_sequences.tsv'
+embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
+embedding_path_owl2vec = '../data/model_vector/owl2vec_go_basic.embeddings'
+onto_path='../data/go-basic.owl'
+### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
+
+goa_term_ids=preprocess_goa_data(goa_path)
+protein_ids,protein_embeddings=load_filtered_protein_embeddings(sequence_path, embedding_path, goa_term_ids)
+
+
+mlp=EmbeddingTransform()
+mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu')
+
+with torch.no_grad():
+    transformed_embeddings = mlp(protein_embeddings)
+
+classes,model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
+embedding_list=[]
+
+pygdata,node_list,idx2node=rdf_to_edge_index(onto_path,'biological_process')
+edge_index=pygdata.edge_index
+edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
+
+for node in node_list:
+    embedding_list.append(torch.tensor(model.wv.get_vector(node)))
+    
+embedding_list=torch.stack(embedding_list)
+embedding_list=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu')
+
+##删除其中没有
