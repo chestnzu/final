@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 from torch_geometric.utils import from_networkx
 import networkx as nx
-import obonet
+import obonet,math
 from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 
@@ -17,11 +17,11 @@ class EmbeddingTransform(nn.Module):
         super().__init__()
         
         self.linear1 = nn.Linear(input_dim, hidden_dim)
-        torch.nn.init.kaiming_normal_(self.fc1.weight)
+        torch.nn.init.kaiming_normal_(self.linear1.weight)
         self.linear1.bias.data.fill_(0.01)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(hidden_dim, output_dim)
-        torch.nn.init.kaiming_normal_(self.fc2.weight)
+        torch.nn.init.kaiming_normal_(self.linear2.weight)
         self.linear2.bias.data.fill_(0.01)
         
     def forward(self, x):
@@ -41,6 +41,27 @@ class GCN(torch.nn.Module):
         x = F.relu(x)
         x = self.conv2(x, edge_index)
         return x
+
+
+    
+class Combine_Transformer(nn.Module):
+    def __init__(self, input_dim, output_dim,num_layers,num_heads):
+        super(Combine_Transformer, self).__init__()
+        self.fc = nn.Linear(input_dim, output_dim)
+        self.heads = num_heads
+        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
+        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
+
+    
+    def forward(self, protein_vectors, go_vectors):
+        combine_features = torch.cat((protein_vectors, go_vectors), dim=0)
+        attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
+        transformer_output = self.transformer_encoder(attn_output)
+        output = self.fc(transformer_output)
+        return output
+
+
 
 
 def create_adjacency_matrix(onto_path,GO_list,namespace):

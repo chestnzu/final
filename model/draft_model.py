@@ -41,5 +41,5 @@ embedding_vector=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu
 data=Data(x=embedding_vector,edge_index=edge_index).cuda()
 GCN_model=GCN(input_dim=embedding_vector.shape[1], hidden_dim=512, output_dim=200).cuda()
 with torch.no_grad():
-    out = GCN_model(data.x, data.edge_index) 
-##删除其中没有
+    output = GCN_model(data.x, data.edge_index) 
+
