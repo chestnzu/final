@@ -60,38 +60,40 @@ goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
 embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
 ### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
-def preprocess_goa_data(goa_path,threshold=20,IEA=False):
-    goa=pd.read_csv(goa_path, sep="\t", comment='!', header=None)
+def load_filtered_protein_embeddings(
+        goa_path:str,
+        sequence_path:str,
+        embedding_path:str,
+        threshold:int=20,
+        IEA:bool=False):
+    ## Read the GOA file
+    goa=pd.read_csv(goa_path, sep="\t", comment='!', header=None) 
+    ## deduplicate the GOA file
     goa_deduplicated=goa[[1, 4, 6]].drop_duplicates()
+    ## Set column names
     goa_deduplicated.columns = ['DB_Object_ID', 'GO_ID', 'Evidence_Code']
+    ## Filter out IEA evidence code if specified
     if not IEA:
         goa_deduplicated=goa_deduplicated[goa_deduplicated['Evidence_Code'] != 'IEA']
+    ## filter proteins with more than threshold GO terms
     goa_term=goa_deduplicated.groupby('DB_Object_ID')['GO_ID'].count()>threshold
-    goa_term=goa_term[goa_term].index.tolist()
-    annotated_go_terms=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(goa_term), 'GO_ID'].unique().tolist()
-    return goa_term,annotated_go_terms
-
-
-
-goa_term_ids=preprocess_goa_data(goa_path)
-def load_filtered_protein_embeddings(sequence_path, embedding_path, goa_term_ids):
-    """
-    根据 GOA term 过滤蛋白质 embedding，返回 ID 和 embedding Tensor。
-    """
-    # 读取蛋白质 ID 列表（顺序必须和 embedding 对应）
-    sequence = pd.read_csv(sequence_path, sep='\t', usecols=[0])
+    filtered_protein_ids=goa_term[goa_term].index.tolist()
+    ## filter GO terms
+    annotated_go_terms=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(filtered_protein_ids), 'GO_ID'].unique().tolist()    
+    ## Read the protein sequences
+    sequence = pd.read_csv(sequence_path, sep='\t', usecols=[0])    
     protein_name = sequence['ID'].tolist()
     # 加载对应的 ESM embedding
     protein_embedding = torch.load(embedding_path)  # List[Tensor]
     # Zip 成 (id, embedding)
+
     embedding_with_id = list(zip(protein_name, protein_embedding))
     # 过滤：只保留在 GOA term 中的蛋白
-    filtered_embeddings = [(pid, vec) for pid, vec in embedding_with_id if pid in goa_term_ids]
+    filtered_embeddings = [(pid, vec) for pid, vec in embedding_with_id if pid in filtered_protein_ids]
     # 拆分为 ID 和 Tensor
     protein_ids, protein_embeddings = zip(*filtered_embeddings)
     protein_embeddings = torch.stack(protein_embeddings)
-    return protein_ids, protein_embeddings
-
+    return protein_ids,protein_embeddings, annotated_go_terms
 
 ## 读取OWL2VEC生成的序列
 embedding_path = '../data/model_vector/owl2vec_go_basic.embeddings'

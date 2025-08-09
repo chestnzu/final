@@ -11,14 +11,13 @@ sequence_path='../data/train_sequences.tsv'
 embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
 embedding_path_owl2vec = '../data/model_vector/owl2vec_go_basic.embeddings'
 onto_path='../data/go-basic.owl'
-### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
 
-goa_term_ids=preprocess_goa_data(goa_path)
-protein_ids,protein_embeddings=load_filtered_protein_embeddings(sequence_path, embedding_path, goa_term_ids)
+### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
+protein_ids,protein_embeddings,GO_list=load_filtered_protein_embeddings(goa_path,sequence_path, embedding_path)
 
 
 mlp=EmbeddingTransform()
-mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu')
+mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available
 
 with torch.no_grad():
     transformed_embeddings = mlp(protein_embeddings)
