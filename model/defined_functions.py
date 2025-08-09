@@ -17,8 +17,12 @@ class EmbeddingTransform(nn.Module):
         super().__init__()
         
         self.linear1 = nn.Linear(input_dim, hidden_dim)
+        torch.nn.init.kaiming_normal_(self.fc1.weight)
+        self.linear1.bias.data.fill_(0.01)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(hidden_dim, output_dim)
+        torch.nn.init.kaiming_normal_(self.fc2.weight)
+        self.linear2.bias.data.fill_(0.01)
         
     def forward(self, x):
         x = self.linear1(x)

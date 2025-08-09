@@ -5,7 +5,7 @@ from sklearn.preprocessing import LabelEncoder
 from defined_functions import *
 from data_processing import *
 from torch_geometric.utils import dense_to_sparse
-
+from torch_geometric.data import Data 
 
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
@@ -36,6 +36,10 @@ for i in range(label_num):
     embedding_list.append(torch.tensor(model.wv.get_vector("http://purl.obolibrary.org/obo/"+node)))
     
 embedding_list=torch.stack(embedding_list)
-embedding_list=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu')
+embedding_vector=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu')
 
+data=Data(x=embedding_vector,edge_index=edge_index).cuda()
+GCN_model=GCN(input_dim=embedding_vector.shape[1], hidden_dim=512, output_dim=200).cuda()
+with torch.no_grad():
+    out = GCN_model(data.x, data.edge_index) 
 ##删除其中没有
