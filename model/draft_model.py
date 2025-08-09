@@ -4,6 +4,7 @@ import torch.nn as nn
 from sklearn.preprocessing import LabelEncoder
 from defined_functions import *
 from data_processing import *
+from torch_geometric.utils import dense_to_sparse
 
 
 goa_path="../data/goa_human.gaf"
@@ -25,12 +26,14 @@ with torch.no_grad():
 classes,model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
 embedding_list=[]
 
-pygdata,node_list,idx2node=rdf_to_edge_index(onto_path,'biological_process')
-edge_index=pygdata.edge_index
+adj,enc=create_adjacency_matrix(onto_path,GO_list,'biological_process')
+edge_index,edge_attr= dense_to_sparse(adj)
 edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
 
-for node in node_list:
-    embedding_list.append(torch.tensor(model.wv.get_vector(node)))
+label_num=len(enc.classes_)
+for i in range(label_num):
+    node=enc.inverse_transform([i])[0]
+    embedding_list.append(torch.tensor(model.wv.get_vector("http://purl.obolibrary.org/obo/"+node)))
     
 embedding_list=torch.stack(embedding_list)
 embedding_list=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu')
