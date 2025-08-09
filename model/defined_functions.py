@@ -8,7 +8,7 @@ from torch_geometric.utils import from_networkx
 import networkx as nx
 import obonet
 from owlready2 import get_ontology
-
+from skelearn.preprocessing import LabelEncoder
 
 
 class EmbeddingTransform(nn.Module):
@@ -59,3 +59,25 @@ def rdf_to_edge_index(onto_path,namespace):
     pygdata=from_networkx(g)
 
     return pygdata,node_list,idx2node
+
+
+
+def create_adjacency_matrix(onto_path,GO_list):
+    enc=LabelEncoder()
+    onto=get_ontology(onto_path).load()
+    GO_list=[term.replace('GO:','GO_') for term in GO_list]
+    label_list=GO_list
+    label_space=enc.fit_transform(label_list)
+    label_num=len(label_space)
+    adj_matrix=torch.zeros((label_num,label_num)).cuda()
+    for term in GO_list:
+        term=onto.search_one(iri=term.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
+        parents=term.is_a
+        idx=enc.transform([term.name])
+        if len(parents) == 0:
+            continue
+        for parent in parents:
+            if str(parent) != 'owl.Thing' and len(str(parent))<=14 and parent.name in label_list:
+                parent_idx = enc.transform([parent.name])
+                adj_matrix[idx, parent_idx] = 1
+    return adj_matrix, enc
