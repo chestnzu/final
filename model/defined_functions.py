@@ -11,6 +11,7 @@ from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 
 
+
 class EmbeddingTransform(nn.Module):
     def __init__(self, input_dim=1280, hidden_dim=512, output_dim=200):
         super().__init__()
