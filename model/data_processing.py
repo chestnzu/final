@@ -63,7 +63,6 @@ embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
 def load_filtered_protein_embeddings(
         goa_path:str,
         sequence_path:str,
-        embedding_path:str,
         threshold:int=20,
         IEA:bool=False):
     ## Read the GOA file
@@ -77,23 +76,19 @@ def load_filtered_protein_embeddings(
         goa_deduplicated=goa_deduplicated[goa_deduplicated['Evidence_Code'] != 'IEA']
     ## filter proteins with more than threshold GO terms
     goa_term=goa_deduplicated.groupby('DB_Object_ID')['GO_ID'].count()>threshold
-    filtered_protein_ids=goa_term[goa_term].index.tolist()
-    ## filter GO terms
-    annotated_go_terms=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(filtered_protein_ids), 'GO_ID'].unique().tolist()    
-    ## Read the protein sequences
-    sequence = pd.read_csv(sequence_path, sep='\t', usecols=[0])    
-    protein_name = sequence['ID'].tolist()
-    # 加载对应的 ESM embedding
-    protein_embedding = torch.load(embedding_path)  # List[Tensor]
-    # Zip 成 (id, embedding)
+    filtered_protein_ids=goa_term[goa_term].index.tolist()  ## 输出满足条件的蛋白质ID
+    sequence = pd.read_csv(sequence_path, sep='\t')    
+    sequence = sequence[sequence['ID'].isin(filtered_protein_ids)]
 
-    embedding_with_id = list(zip(protein_name, protein_embedding))
-    # 过滤：只保留在 GOA term 中的蛋白
-    filtered_embeddings = [(pid, vec) for pid, vec in embedding_with_id if pid in filtered_protein_ids]
+    GO_term_list=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(filtered_protein_ids)].\
+        groupby('DB_Object_ID')["GO_ID"].apply(lambda x: ";".join(set(x))).reset_index().rename(columns={"GO_ID":"GO_Terms"})
+    
+    merged_df=sequence.merge(GO_term_list, left_on='ID', right_on='DB_Object_ID', how='inner')
     # 拆分为 ID 和 Tensor
-    protein_ids, protein_embeddings = zip(*filtered_embeddings)
-    protein_embeddings = torch.stack(protein_embeddings)
-    return protein_ids,protein_embeddings, annotated_go_terms
+    protein_id=merged_df['ID'].tolist()
+    sequences=merged_df['Sequence'].tolist()
+    annotated_go_terms=merged_df['GO_Terms'].tolist()
+    return protein_id,sequences, annotated_go_terms
 
 ## 读取OWL2VEC生成的序列
 embedding_path = '../data/model_vector/owl2vec_go_basic.embeddings'

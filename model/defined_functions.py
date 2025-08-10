@@ -9,6 +9,7 @@ import networkx as nx
 import obonet,math
 from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
+from torch.utils.data import Dataset
 
 
 
@@ -42,7 +43,20 @@ class GCN(torch.nn.Module):
         x = self.conv2(x, edge_index)
         return x
 
+class protein_loader(Dataset):
+    def __init__(self, sequences, protein_ids,annotations):
+        self.sequences = sequences
+        self.protein_ids = protein_ids
+        self.annotations = annotations ## one-hot vector, encoding which GO terms are annotated to the protein
 
+    def __len__(self):
+        return len(self.protein_ids)
+    
+    def __getitem__(self, idx):
+        protein_id = self.protein_ids[idx]
+        sequence = self.sequences[idx]
+        annotations = self.annotations[idx]
+        return protein_id, sequence, annotations
     
 class Combine_Transformer(nn.Module):
     def __init__(self, input_dim, output_dim,num_layers,num_heads):
