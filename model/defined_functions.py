@@ -56,7 +56,7 @@ class protein_loader(Dataset):
         protein_id = self.protein_ids[idx]
         sequence = self.sequences[idx]
         annotations = self.annotations[idx]
-        return protein_id, sequence, annotations
+        return {'protein_id': protein_id, 'sequence':sequence, 'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
     def __init__(self, input_dim, output_dim,num_layers,num_heads):
@@ -78,18 +78,20 @@ class Combine_Transformer(nn.Module):
 
 
 
-def create_adjacency_matrix(onto_path,GO_list,namespace):
+def create_adjacency_matrix(onto_path,namespace):
     enc=LabelEncoder()
     onto=get_ontology(onto_path).load()
-    GO_list=[term.replace('GO:','GO_') for term in GO_list]
-    label_list=GO_list
+    label_list=[]
+    for cls in onto.classes():
+        if cls.hasOBONamespace and cls.hasOBONamespace[0] == namespace:
+            label_list.append(cls.name)
+        else:
+            continue
     label_space=enc.fit_transform(label_list)
     label_num=len(label_space)
     adj_matrix=torch.zeros((label_num,label_num)).cuda()
-    for term in GO_list:
+    for term in label_list:
         term=onto.search_one(iri=term.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
-        if len(term.hasOBONamespace)==0 or term.hasOBONamespace[0]!=namespace:
-            continue
         parents=term.is_a
         idx=enc.transform([term.name])
         if len(parents) == 0:
@@ -98,4 +100,4 @@ def create_adjacency_matrix(onto_path,GO_list,namespace):
             if str(parent) != 'owl.Thing' and len(str(parent))<=14 and parent.name in label_list:
                 parent_idx = enc.transform([parent.name])
                 adj_matrix[idx, parent_idx] = 1
-    return adj_matrix, enc
+    return adj_matrix, enc,label_list

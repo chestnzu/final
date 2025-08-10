@@ -6,6 +6,7 @@ from defined_functions import *
 from data_processing import *
 from torch_geometric.utils import dense_to_sparse
 from torch_geometric.data import Data 
+from torch.utils.data import DataLoader,Dataset
 
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
@@ -13,9 +14,31 @@ embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
 embedding_path_owl2vec = '../data/model_vector/owl2vec_go_basic.embeddings'
 onto_path='../data/go-basic.owl'
 
-### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
-protein_ids,protein_embeddings,GO_list=load_filtered_protein_embeddings(goa_path,sequence_path, embedding_path)
+go_aspect=['biological_process', 'molecular_function', 'cellular_component']
 
+### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
+protein_ids,protein_sequence,go_annotation_list=load_filtered_protein_embeddings(goa_path,sequence_path)
+training_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
+print('sucessfully load the protein embeddings')
+
+for aspect in go_aspect:
+    adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,aspect)
+    print('successfully create adjacency matrix for {}'.format(aspect))
+    label_num=len(label_list)
+    for x in go_annotation_list:
+        x= x.split(';')
+        temp_list=[term for term in x if term in label_list]
+        if len(temp_list) == 0:
+            training_labels[aspect].append([0]*label_num)
+        else:
+            digit_labels=enc.transform(temp_list)
+            training_labels[aspect].append([1 if i in digit_labels else 0 for i in range(label_num)])
+    print('create xxx')
+    training_dataset = protein_loader(
+        sequences=protein_sequence,
+        protein_ids=protein_ids,
+        annotations=training_labels[aspect]
+    )
 
 mlp=EmbeddingTransform()
 mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available
