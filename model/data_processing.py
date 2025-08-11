@@ -84,7 +84,7 @@ def load_filtered_protein_embeddings(
     sequence['Sequence'] = sequence['Sequence'].str.slice(0, MAXLEN)
 
     goa_deduplicated['GO_ID'] = goa_deduplicated['GO_ID'].str.replace('GO:', 'GO_')
-
+    go_list = goa_deduplicated['GO_ID'].drop_duplicates().to_list()
     GO_term_list=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(filtered_protein_ids)].\
         groupby('DB_Object_ID')["GO_ID"].apply(lambda x: ";".join(set(x))).reset_index().rename(columns={"GO_ID":"GO_Terms"})
     
@@ -94,7 +94,7 @@ def load_filtered_protein_embeddings(
     protein_id=merged_df['ID'].tolist()
     sequences=merged_df['Sequence'].tolist()
     annotated_go_terms=merged_df['GO_Terms'].tolist()
-    return protein_id,sequences, annotated_go_terms
+    return protein_id,sequences, annotated_go_terms,go_list
 
 
 ## 读取OWL2VEC生成的序列

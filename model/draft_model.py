@@ -17,12 +17,12 @@ onto_path='../data/go-basic.owl'
 go_aspect=['biological_process', 'molecular_function', 'cellular_component']
 
 ### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
-protein_ids,protein_sequence,go_annotation_list=load_filtered_protein_embeddings(goa_path,sequence_path)
+protein_ids,protein_sequence,go_annotation_list,go_list=load_filtered_protein_embeddings(goa_path,sequence_path)
 training_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
 print('sucessfully load the protein embeddings')
 
 for aspect in go_aspect:
-    adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,aspect)
+    adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
     print('successfully create adjacency matrix for {}'.format(aspect))
     label_num=len(label_list)
     for x in go_annotation_list:

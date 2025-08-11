@@ -78,13 +78,14 @@ class Combine_Transformer(nn.Module):
 
 
 
-def create_adjacency_matrix(onto_path,namespace):
+def create_adjacency_matrix(onto_path,go_list,namespace):
     enc=LabelEncoder()
     onto=get_ontology(onto_path).load()
     label_list=[]
-    for cls in onto.classes():
-        if cls.hasOBONamespace and cls.hasOBONamespace[0] == namespace:
-            label_list.append(cls.name)
+    for cls in go_list:
+        cls_owl=onto.search_one(iri=cls.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
+        if cls_owl.hasOBONamespace and cls_owl.hasOBONamespace[0] == namespace:
+            label_list.append(cls)
         else:
             continue
     label_space=enc.fit_transform(label_list)
