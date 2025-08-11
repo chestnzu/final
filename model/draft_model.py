@@ -46,7 +46,6 @@ for aspect in go_aspect:
     datasets= protein_loader(datasets)
     train_dataset, val_dataset, test_dataset = random_split(datasets, [train_size, val_size, test_size])
     train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-
     #optimizer = torch.optim.Adam(model_mlp.parameters(), lr=4e-5)  # 4e-5 150M 1e-5 3B
     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
 

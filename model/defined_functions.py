@@ -105,18 +105,20 @@ def create_adjacency_matrix(onto_path,go_list,namespace):
                 adj_matrix[idx, parent_idx] = 1
     return adj_matrix, enc,label_list
 
-def load_protein_embeddings(sequence,protein_id,model,batch_converter,alphabet):
-    batch_labels = [(protein_id, seq) for protein_id, seq in zip(protein_id, sequence)]
+def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet):
+    batch_input = [(protein_id, seq) for protein_id, seq in zip(protein_ids, sequences)]
     model=model.cuda()
     sequence_representations = []
-    for i in range(0,len(protein_id),2):
-        micro_batch = batch_labels[i:i+2]
+    for i in range(0,len(protein_ids),2):
+        print(i)
+        micro_batch = batch_input[i:i+2]
         batch_labels,batch_strs,batch_tokens = batch_converter(micro_batch)
         batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
+
         with torch.no_grad():
-            batch_tokens= batch_tokens.to('cuda' if torch.cuda.is_available() else 'cpu')
-            results = model(batch_tokens, repr_layers=[33], return_contacts=True)
-        token_representations = results["representations"][33].detach().cpu()
+            batch_tokens = batch_tokens.cuda()
+            results = model(batch_tokens, repr_layers=[33])
+        token_representations = results["representations"][33].detach()
         for i, tokens_len in enumerate(batch_lens):
             sequence_representations.append(token_representations[i, 1 : tokens_len - 1].mean(0))
     embedding_batch= torch.stack(sequence_representations, dim=0)
