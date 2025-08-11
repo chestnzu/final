@@ -10,6 +10,7 @@ import obonet,math
 from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
+import esm
 
 
 
@@ -44,7 +45,8 @@ class GCN(torch.nn.Module):
         return x
 
 class protein_loader(Dataset):
-    def __init__(self, sequences, protein_ids,annotations):
+    def __init__(self, dataset):
+        sequences,protein_ids,annotations= zip(*dataset)
         self.sequences = sequences
         self.protein_ids = protein_ids
         self.annotations = annotations ## one-hot vector, encoding which GO terms are annotated to the protein
@@ -102,3 +104,20 @@ def create_adjacency_matrix(onto_path,go_list,namespace):
                 parent_idx = enc.transform([parent.name])
                 adj_matrix[idx, parent_idx] = 1
     return adj_matrix, enc,label_list
+
+def load_protein_embeddings(sequence,protein_id,model,batch_converter,alphabet):
+    batch_labels = [(protein_id, seq) for protein_id, seq in zip(protein_id, sequence)]
+    model=model.cuda()
+    sequence_representations = []
+    for i in range(0,len(protein_id),2):
+        micro_batch = batch_labels[i:i+2]
+        batch_labels,batch_strs,batch_tokens = batch_converter(micro_batch)
+        batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
+        with torch.no_grad():
+            batch_tokens= batch_tokens.to('cuda' if torch.cuda.is_available() else 'cpu')
+            results = model(batch_tokens, repr_layers=[33], return_contacts=True)
+        token_representations = results["representations"][33].detach().cpu()
+        for i, tokens_len in enumerate(batch_lens):
+            sequence_representations.append(token_representations[i, 1 : tokens_len - 1].mean(0))
+    embedding_batch= torch.stack(sequence_representations, dim=0)
+    return embedding_batch

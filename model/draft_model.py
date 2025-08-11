@@ -6,7 +6,10 @@ from defined_functions import *
 from data_processing import *
 from torch_geometric.utils import dense_to_sparse
 from torch_geometric.data import Data 
-from torch.utils.data import DataLoader,Dataset
+from torch.utils.data import DataLoader,Dataset,random_split
+from tqdm import tqdm
+import esm
+
 
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
@@ -18,8 +21,11 @@ go_aspect=['biological_process', 'molecular_function', 'cellular_component']
 
 ### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
 protein_ids,protein_sequence,go_annotation_list,go_list=load_filtered_protein_embeddings(goa_path,sequence_path)
-training_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
+go_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
 print('sucessfully load the protein embeddings')
+
+model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+batch_converter = alphabet.get_batch_converter()
 
 for aspect in go_aspect:
     adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
@@ -29,16 +35,29 @@ for aspect in go_aspect:
         x= x.split(';')
         temp_list=[term for term in x if term in label_list]
         if len(temp_list) == 0:
-            training_labels[aspect].append([0]*label_num)
+            go_labels[aspect].append([0]*label_num)
         else:
             digit_labels=enc.transform(temp_list)
-            training_labels[aspect].append([1 if i in digit_labels else 0 for i in range(label_num)])
-    print('create xxx')
-    training_dataset = protein_loader(
-        sequences=protein_sequence,
-        protein_ids=protein_ids,
-        annotations=training_labels[aspect]
-    )
+            go_labels[aspect].append([1 if i in digit_labels else 0 for i in range(label_num)])
+    datasets=zip(protein_sequence, protein_ids, go_labels[aspect])
+    train_size= int(0.8 * len(protein_ids))
+    val_size = int(0.1 * len(protein_ids))
+    test_size = len(protein_ids) - train_size - val_size
+    datasets= protein_loader(datasets)
+    train_dataset, val_dataset, test_dataset = random_split(datasets, [train_size, val_size, test_size])
+    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+    #optimizer = torch.optim.Adam(model_mlp.parameters(), lr=4e-5)  # 4e-5 150M 1e-5 3B
+    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
+
+    for batch in tqdm(train_dataloader):
+        protein_ids = batch['protein_id']
+        sequences = batch['sequence']
+        annotations = batch['labels']
+        protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
+        
+
+    
 
 mlp=EmbeddingTransform()
 mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available

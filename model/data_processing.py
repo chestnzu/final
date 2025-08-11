@@ -39,22 +39,6 @@ def preprocessing_goa(data_path,evidence_code_type='all'):
     # Save to TSV file
     # go_map.to_csv("../data/train_labels.tsv", sep="\t", index=False)
 
-MAXLEN=500
-def preprocessing_sequence(data_path,MAXLEN=MAXLEN):
-    """ truncate sequence to MAXLEN and extract UniProt ID """
-    data=[]
-    for record in SeqIO.parse(data_path, "fasta"):
-        header = record.description  # 全部描述行
-        seq = str(record.seq)
-        if len(seq) > MAXLEN:
-            seq = seq[:MAXLEN]
-        try:
-            uniprot_id = header.split("|")[1]
-        except:
-            uniprot_id = record.id
-        data.append((uniprot_id,seq))
-    return data
-
 
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
@@ -64,7 +48,7 @@ def load_filtered_protein_embeddings(
         goa_path:str,
         sequence_path:str,
         threshold:int=10,
-        MAXLEN:int=1024,
+        MAXLEN:int=512,
         IEA:bool=False):
     ## Read the GOA file
     goa=pd.read_csv(goa_path, sep="\t", comment='!', header=None) 
