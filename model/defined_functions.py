@@ -61,16 +61,19 @@ class protein_loader(Dataset):
         return {'protein_id': protein_id, 'sequence':sequence, 'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
-    def __init__(self, input_dim, output_dim,num_layers,num_heads):
+    def __init__(self, input_dim, output_dim,num_layers,num_heads,GO_data):
         super(Combine_Transformer, self).__init__()
         self.fc = nn.Linear(input_dim, output_dim)
         self.heads = num_heads
+        self.go_data = GO_data
+        self.GCN= GCN(GO_data.x.shape[1], 512, input_dim)
         self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
         self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
 
     
     def forward(self, protein_vectors, go_vectors):
+        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index)
         combine_features = torch.cat((protein_vectors, go_vectors), dim=0)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
         transformer_output = self.transformer_encoder(attn_output)
@@ -110,7 +113,6 @@ def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet
     model=model.cuda()
     sequence_representations = []
     for i in range(0,len(protein_ids),2):
-        print(i)
         micro_batch = batch_input[i:i+2]
         batch_labels,batch_strs,batch_tokens = batch_converter(micro_batch)
         batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)

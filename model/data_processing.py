@@ -88,4 +88,4 @@ def load_owl2vec_embeddings(embedding_path,onto_path):
     model=gensim.models.Word2Vec.load(embedding_path)
     onto=get_ontology(onto_path).load()
     classes = list(onto.classes())
-    return classes, model 
+    return model 

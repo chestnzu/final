@@ -13,8 +13,8 @@ import esm
 
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
-embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
-embedding_path_owl2vec = '../data/model_vector/owl2vec_go_basic.embeddings'
+embedding_path='../data/esm_swissprot_650U_500.pt'
+embedding_path_owl2vec = '../data/pre_trained_model/owl2vec_go_basic.embeddings'
 onto_path='../data/go-basic.owl'
 
 go_aspect=['biological_process', 'molecular_function', 'cellular_component']
@@ -24,13 +24,27 @@ protein_ids,protein_sequence,go_annotation_list,go_list=load_filtered_protein_em
 go_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
 print('sucessfully load the protein embeddings')
 
+owl2vec_model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
+print('sucessfully load the OWL2VEC embeddings')
+
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
 batch_converter = alphabet.get_batch_converter()
 
 for aspect in go_aspect:
     adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
-    print('successfully create adjacency matrix for {}'.format(aspect))
+
+    edge_index,edge_attr= dense_to_sparse(adj_matrix)
+    edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
     label_num=len(label_list)
+
+    embedding_list=[]
+    for i in range(label_num):
+        node=enc.inverse_transform([i])[0]
+        embedding_list.append(torch.tensor(owl2vec_model.wv.get_vector("http://purl.obolibrary.org/obo/"+node)))
+    embedding_vector=torch.stack(embedding_list)
+    embedding_vector=embedding_vector.to('cuda' if torch.cuda.is_available() else 'cpu')
+    data=Data(x=embedding_vector,edge_index=edge_index).cuda()
+
     for x in go_annotation_list:
         x= x.split(';')
         temp_list=[term for term in x if term in label_list]
@@ -39,6 +53,7 @@ for aspect in go_aspect:
         else:
             digit_labels=enc.transform(temp_list)
             go_labels[aspect].append([1 if i in digit_labels else 0 for i in range(label_num)])
+    print('successfully create adjacency matrix for {}'.format(aspect))
     datasets=zip(protein_sequence, protein_ids, go_labels[aspect])
     train_size= int(0.8 * len(protein_ids))
     val_size = int(0.1 * len(protein_ids))
@@ -54,9 +69,7 @@ for aspect in go_aspect:
         sequences = batch['sequence']
         annotations = batch['labels']
         protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
-        
-
-    
+        protein_embeddings = protein_embeddings.to('cuda' if torch.cuda.is_available() else 'cpu')
 
 mlp=EmbeddingTransform()
 mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available
@@ -64,22 +77,10 @@ mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU 
 with torch.no_grad():
     transformed_embeddings = mlp(protein_embeddings)
 
-classes,model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
-embedding_list=[]
 
-adj,enc=create_adjacency_matrix(onto_path,GO_list,'biological_process')
-edge_index,edge_attr= dense_to_sparse(adj)
-edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
 
-label_num=len(enc.classes_)
-for i in range(label_num):
-    node=enc.inverse_transform([i])[0]
-    embedding_list.append(torch.tensor(model.wv.get_vector("http://purl.obolibrary.org/obo/"+node)))
-    
-embedding_list=torch.stack(embedding_list)
-embedding_vector=embedding_list.to('cuda' if torch.cuda.is_available() else 'cpu')
 
-data=Data(x=embedding_vector,edge_index=edge_index).cuda()
+
 GCN_model=GCN(input_dim=embedding_vector.shape[1], hidden_dim=512, output_dim=200).cuda()
 with torch.no_grad():
     output = GCN_model(data.x, data.edge_index) 
