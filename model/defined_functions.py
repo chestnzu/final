@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import TopKPooling,SAGEConv
 from torch_geometric.utils import from_networkx
 import networkx as nx
 import obonet,math
@@ -15,7 +15,7 @@ import esm
 
 
 class EmbeddingTransform(nn.Module):
-    def __init__(self, input_dim=1280, hidden_dim=512, output_dim=200):
+    def __init__(self, input_dim=1280, hidden_dim=128, output_dim=200):
         super().__init__()
         
         self.linear1 = nn.Linear(input_dim, hidden_dim)
@@ -35,14 +35,24 @@ class EmbeddingTransform(nn.Module):
 class GCN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(GCN, self).__init__()
-        self.conv1 = GCNConv(input_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, output_dim)
+        self.conv1 = SAGEConv(input_dim, hidden_dim)
+        self.pool1 = TopKPooling(hidden_dim, ratio=0.5)
+        self.conv2 = SAGEConv(hidden_dim, output_dim)
+        self.pool2 = TopKPooling(output_dim, ratio=0.5)
 
     def forward(self, x, edge_index):
+        batch = torch.zeros(x.size(0), dtype=torch.long).cuda()
         x = self.conv1(x, edge_index)
         x = F.relu(x)
+        x, edge_index, _, batch, _, _ = self.pool1(x, edge_index,batch=batch)
         x = self.conv2(x, edge_index)
+        x = F.relu(x)
+        x, edge_index, _, batch, _, _ = self.pool2(x, edge_index,batch=batch)
+
         return x
+
+
+
 
 class protein_loader(Dataset):
     def __init__(self, dataset):
@@ -63,17 +73,20 @@ class protein_loader(Dataset):
 class Combine_Transformer(nn.Module):
     def __init__(self, input_dim, output_dim,num_layers,num_heads,GO_data):
         super(Combine_Transformer, self).__init__()
-        self.fc = nn.Linear(input_dim, output_dim)
         self.heads = num_heads
         self.go_data = GO_data
-        self.GCN= GCN(GO_data.x.shape[1], 512, input_dim)
+        self.pool1= TopKPooling(input_dim, ratio=0.8)   
+        self.fc1 = EmbeddingTransform()
+        self.fc2 = nn.Linear(input_dim, output_dim)
+        self.GCN = GCN(GO_data.x.shape[1], 16, input_dim)
         self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
         self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
 
     
-    def forward(self, protein_vectors, go_vectors):
-        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index)
+    def forward(self, protein_vectors):
+        protein_vectors = self.fc1(protein_vectors) ## 将ESM2的1280维向量转换为200维向量
+        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index) ## 将OWL2VEC的200维向量作为输入，放入GCN中，并加上GO的邻接矩阵，进一步训练，生成对应的200维向量
         combine_features = torch.cat((protein_vectors, go_vectors), dim=0)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
         transformer_output = self.transformer_encoder(attn_output)
@@ -110,7 +123,6 @@ def create_adjacency_matrix(onto_path,go_list,namespace):
 
 def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet):
     batch_input = [(protein_id, seq) for protein_id, seq in zip(protein_ids, sequences)]
-    model=model.cuda()
     sequence_representations = []
     for i in range(0,len(protein_ids),2):
         micro_batch = batch_input[i:i+2]
@@ -120,7 +132,7 @@ def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet
         with torch.no_grad():
             batch_tokens = batch_tokens.cuda()
             results = model(batch_tokens, repr_layers=[33])
-        token_representations = results["representations"][33].detach()
+        token_representations = results["representations"][33].detach().cpu()
         for i, tokens_len in enumerate(batch_lens):
             sequence_representations.append(token_representations[i, 1 : tokens_len - 1].mean(0))
     embedding_batch= torch.stack(sequence_representations, dim=0)

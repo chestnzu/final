@@ -70,7 +70,7 @@ for aspect in go_aspect:
         annotations = batch['labels']
         protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
         protein_embeddings = protein_embeddings.to('cuda' if torch.cuda.is_available() else 'cpu')
-
+        ##试运行的时候，显存还是超标
 mlp=EmbeddingTransform()
 mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available
 

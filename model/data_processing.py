@@ -47,7 +47,7 @@ embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
 def load_filtered_protein_embeddings(
         goa_path:str,
         sequence_path:str,
-        threshold:int=10,
+        threshold:int=15,
         MAXLEN:int=512,
         IEA:bool=False):
     ## Read the GOA file
