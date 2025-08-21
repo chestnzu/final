@@ -28,11 +28,17 @@ owl2vec_model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
 print('sucessfully load the OWL2VEC embeddings')
 
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+device= 'cuda' if torch.cuda.is_available() else 'cpu'
+model.to(device)
 batch_converter = alphabet.get_batch_converter()
+
+input_dim = 200
+num_layers = 6
+num_heads = 8
+
 
 for aspect in go_aspect:
     adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
-
     edge_index,edge_attr= dense_to_sparse(adj_matrix)
     edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
     label_num=len(label_list)
@@ -42,8 +48,8 @@ for aspect in go_aspect:
         node=enc.inverse_transform([i])[0]
         embedding_list.append(torch.tensor(owl2vec_model.wv.get_vector("http://purl.obolibrary.org/obo/"+node)))
     embedding_vector=torch.stack(embedding_list)
-    embedding_vector=embedding_vector.to('cuda' if torch.cuda.is_available() else 'cpu')
-    data=Data(x=embedding_vector,edge_index=edge_index).cuda()
+    embedding_vector=embedding_vector
+    data=Data(x=embedding_vector,edge_index=edge_index).to(device)
 
     for x in go_annotation_list:
         x= x.split(';')
@@ -69,10 +75,8 @@ for aspect in go_aspect:
         sequences = batch['sequence']
         annotations = batch['labels']
         protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
-        protein_embeddings = protein_embeddings.to('cuda' if torch.cuda.is_available() else 'cpu')
-        ##试运行的时候，显存还是超标
-mlp=EmbeddingTransform()
-mlp=mlp.to('cuda' if torch.cuda.is_available() else 'cpu') ## Move model to GPU if available
+        protein_embeddings = protein_embeddings.to(device)
+
 
 with torch.no_grad():
     transformed_embeddings = mlp(protein_embeddings)

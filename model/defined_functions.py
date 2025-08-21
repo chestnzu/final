@@ -36,9 +36,9 @@ class GCN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(GCN, self).__init__()
         self.conv1 = SAGEConv(input_dim, hidden_dim)
-        self.pool1 = TopKPooling(hidden_dim, ratio=0.5)
+        self.pool1 = TopKPooling(hidden_dim, ratio=0.8)
         self.conv2 = SAGEConv(hidden_dim, output_dim)
-        self.pool2 = TopKPooling(output_dim, ratio=0.5)
+        self.pool2 = TopKPooling(output_dim, ratio=0.8)
 
     def forward(self, x, edge_index):
         batch = torch.zeros(x.size(0), dtype=torch.long).cuda()
@@ -48,8 +48,8 @@ class GCN(torch.nn.Module):
         x = self.conv2(x, edge_index)
         x = F.relu(x)
         x, edge_index, _, batch, _, _ = self.pool2(x, edge_index,batch=batch)
-
-        return x
+        go_pooled = x.mean(dim=0, keepdim=True)  # Global pooling
+        return go_pooled
 
 
 
@@ -77,20 +77,21 @@ class Combine_Transformer(nn.Module):
         self.go_data = GO_data
         self.pool1= TopKPooling(input_dim, ratio=0.8)   
         self.fc1 = EmbeddingTransform()
-        self.fc2 = nn.Linear(input_dim, output_dim)
+        self.fc2 = nn.Linear(input_dim*2, output_dim)
         self.GCN = GCN(GO_data.x.shape[1], 16, input_dim)
-        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
-        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
+        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim*2, num_heads=num_heads)
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim*2, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
 
     
     def forward(self, protein_vectors):
         protein_vectors = self.fc1(protein_vectors) ## 将ESM2的1280维向量转换为200维向量
         go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index) ## 将OWL2VEC的200维向量作为输入，放入GCN中，并加上GO的邻接矩阵，进一步训练，生成对应的200维向量
-        combine_features = torch.cat((protein_vectors, go_vectors), dim=0)
+        go_expand= go_vectors.expand(protein_vectors.size(0),-1)  # 扩展维度以匹配蛋白质向量的批次大小
+        combine_features = torch.cat((protein_vectors, go_expand), dim=1)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
         transformer_output = self.transformer_encoder(attn_output)
-        output = self.fc(transformer_output)
+        output = self.fc2(transformer_output)
         return output
 
 
@@ -101,22 +102,29 @@ def create_adjacency_matrix(onto_path,go_list,namespace):
     onto=get_ontology(onto_path).load()
     label_list=[]
     for cls in go_list:
-        cls_owl=onto.search_one(iri=cls.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
-        if cls_owl.hasOBONamespace and cls_owl.hasOBONamespace[0] == namespace:
-            label_list.append(cls)
+        cls=onto.search_one(iri=cls.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
+        if cls.hasOBONamespace and cls.hasOBONamespace[0] == namespace:
+            ancestors = cls.ancestors()
+            if len(ancestors) > 0:
+                label_list.extend(x.name for x in ancestors)
+                label_list.append(cls.name)
+                label_list= list(set(label_list))
         else:
             continue
+    label_list = [x for x in label_list if x[:2]=='GO']  # Filter out terms with length > 14
     label_space=enc.fit_transform(label_list)
     label_num=len(label_space)
+    print(label_num)
     adj_matrix=torch.zeros((label_num,label_num)).cuda()
-    for term in label_list:
+    valid_list=list(set(go_list) & set(label_list))
+    for term in valid_list:
         term=onto.search_one(iri=term.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
         parents=term.is_a
         idx=enc.transform([term.name])
         if len(parents) == 0:
             continue
         for parent in parents:
-            if str(parent) != 'owl.Thing' and len(str(parent))<=14 and parent.name in label_list:
+            if str(parent) != 'owl.Thing' and len(str(parent))<=14:
                 parent_idx = enc.transform([parent.name])
                 adj_matrix[idx, parent_idx] = 1
     return adj_matrix, enc,label_list
