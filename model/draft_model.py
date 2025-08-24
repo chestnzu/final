@@ -35,8 +35,10 @@ batch_converter = alphabet.get_batch_converter()
 input_dim = 200
 num_layers = 6
 num_heads = 8
+epoch_num=30
 
-
+## go list number may not be the same as label_num, as we are creating the adjacency matrix and all ancestors are included,
+## some terms that are not in the go_list may be included in the adjacency matrix as they are ancestors of the terms in the go_list
 for aspect in go_aspect:
     adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
     edge_index,edge_attr= dense_to_sparse(adj_matrix)
@@ -67,8 +69,14 @@ for aspect in go_aspect:
     datasets= protein_loader(datasets)
     train_dataset, val_dataset, test_dataset = random_split(datasets, [train_size, val_size, test_size])
     train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    #optimizer = torch.optim.Adam(model_mlp.parameters(), lr=4e-5)  # 4e-5 150M 1e-5 3B
-    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
+    test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    combine_model=Combine_Transformer(input_dim=input_dim,hidden_dim=512,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,go_data=data).to(device)
+    loss_fn=nn.BCEWithLogitsLoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
+    optimizer = torch.optim.Adam(combine_model.parameters(), lr=1e-4)  # 4e-5 150M 1e-5 3B
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
+    
+
 
     for batch in tqdm(train_dataloader):
         protein_ids = batch['protein_id']
@@ -76,16 +84,11 @@ for aspect in go_aspect:
         annotations = batch['labels']
         protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
         protein_embeddings = protein_embeddings.to(device)
-
-
-with torch.no_grad():
-    transformed_embeddings = mlp(protein_embeddings)
+        
 
 
 
 
 
-GCN_model=GCN(input_dim=embedding_vector.shape[1], hidden_dim=512, output_dim=200).cuda()
-with torch.no_grad():
-    output = GCN_model(data.x, data.edge_index) 
+
 

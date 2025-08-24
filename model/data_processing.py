@@ -6,40 +6,6 @@ import gensim
 from owlready2 import *
 
 
-def preprocessing_goa(data_path,evidence_code_type='all'):
-    """
-    Preprocess the GOA file to create a mapping of Protein IDs to GO Terms.
-    """
-    # Read the GOA file
-    df = pd.read_csv(data_path, sep='\t', comment='!', header=None)
-    
-    # Set column names
-    # df.columns = ['DB', 'DB_Object_ID', 'DB_Object_Symbol', 'Qualifier', 'GO_ID', 
-    #               'DB_Reference', 'Evidence_Code', 'With_or_From', 'Aspect', 
-    #               'DB_Object_Name', 'DB_Object_Synonym', 'DB_Object_Type', 
-    #               'Taxon_ID', 'Date', 'Assigned_By']
-    
-    # Select relevant columns
-    df = df[[1, 4, 6]]
-    df.drop_duplicates(inplace=True)  # Remove duplicates
-    df.columns = ['DB_Object_ID', 'GO_ID', 'Evidence_Code']
-    if evidence_code_type == 'all':
-        pass
-    elif evidence_code_type == 'non-electronic':
-        df=df[df['Evidence_Code'] != 'IEA']     
-    elif evidence_code_type == 'experimental':
-        df = df[df['Evidence_Code'].isin(['EXP', 'IDA', 'IPI', 'IMP', 'IGI', 'IEP'])]
-    elif evidence_code_type == 'experimental and phylogenetic':
-        df = df[df['Evidence_Code'].isin(['EXP', 'IDA', 'IPI', 'IMP', 'IGI', 'IEP', 'IBA','IBD', 'IKR', 'IRD'])]
-
-    # Group by Protein ID and join GO Terms
-    go_map = df.groupby('DB_Object_ID')["GO_ID"].apply(lambda x: ";".join(set(x))).reset_index()
-    go_map.columns = ["ProteinID", "GO_Terms"]
-    return go_map
-    # Save to TSV file
-    # go_map.to_csv("../data/train_labels.tsv", sep="\t", index=False)
-
-
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
 embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'

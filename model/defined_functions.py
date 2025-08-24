@@ -11,6 +11,7 @@ from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 import esm
+from skelearn.metrics import f1_score,roc_auc_score
 
 
 
@@ -145,3 +146,20 @@ def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet
             sequence_representations.append(token_representations[i, 1 : tokens_len - 1].mean(0))
     embedding_batch= torch.stack(sequence_representations, dim=0)
     return embedding_batch
+
+def cal_f1(preds, golds):
+    preds[preds>=0.5]=1
+    preds[preds<0.5]=0
+    f1_macro = f1_score(golds, preds, average='macro')
+    f1_micro = f1_score(golds, preds, average='micro')
+    f1_sample = f1_score(golds, preds, average='samples')
+
+    return f1_macro, f1_micro, f1_sample
+
+def cal_roc(preds, golds):
+    auc_micro = roc_auc_score(golds, preds, average="samples")  
+    return auc_micro
+
+## TODO ##
+## 1. add AUPR
+## 2. add F-max
