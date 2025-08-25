@@ -11,7 +11,7 @@ from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 import esm
-from skelearn.metrics import f1_score,roc_auc_score
+from skelearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score
 
 
 
@@ -160,6 +160,11 @@ def cal_roc(preds, golds):
     auc_micro = roc_auc_score(golds, preds, average="samples")  
     return auc_micro
 
-## TODO ##
-## 1. add AUPR
-## 2. add F-max
+def f_max(preds,golds):
+    precision, recall, thresholds = precision_recall_curve(preds.ravel(), golds.ravel())
+    f_scores = 2 * precision * recall / (precision + recall + 1e-8)
+    return f_scores.max(), thresholds[f_scores.argmax()]
+
+def cal_aupr(preds, golds):
+    aupr = average_precision_score(golds, preds, average="samples")
+    return aupr
