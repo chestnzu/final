@@ -9,8 +9,11 @@ from torch_geometric.data import Data
 from torch.utils.data import DataLoader,Dataset,random_split
 from tqdm import tqdm
 import esm
+import math,datetime
 
 
+
+ctime = datetime.now().strftime("%Y%m%d%H%M%S")
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/train_sequences.tsv'
 embedding_path='../data/esm_swissprot_650U_500.pt'
@@ -36,7 +39,8 @@ input_dim = 200
 num_layers = 6
 num_heads = 8
 epoch_num=30
-
+e=math.e
+metrics_output_test = {}
 ## go list number may not be the same as label_num, as we are creating the adjacency matrix and all ancestors are included,
 ## some terms that are not in the go_list may be included in the adjacency matrix as they are ancestors of the terms in the go_list
 for aspect in go_aspect:
@@ -75,20 +79,70 @@ for aspect in go_aspect:
     loss_fn=nn.BCEWithLogitsLoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
     optimizer = torch.optim.Adam(combine_model.parameters(), lr=1e-4)  # 4e-5 150M 1e-5 3B
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
-    
+    if aspect not in metrics_output_test:
+        metrics_output_test[aspect] = {
+                'f1_sample':[],
+                'fmax':[],
+                'aupr':[],
+                'roc':[]
+            }
+        best_f1 = 0
+        best_model_weights = None
+        optimizer_model_weights = None
 
+    for epoch in range(epoch_num):
+        loss_mean=0
+        for i,batch in tqdm(enumerate(train_dataloader)):
+            optimizer.zero_grad()
+            protein_ids = batch['protein_id']
+            sequences = batch['sequence']
+            golds = batch['labels'].cuda()
+            protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
+            protein_embeddings = protein_embeddings.to(device)
+            output=combine_model(protein_embeddings)
+            loss=loss_fn(output,golds)
+            loss.backward()
+            optimizer.step()
+            loss_mean+=loss.item()
+            print('{}  Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(aspect, epoch + 1, epoch_num, i + 1,
+                                                                                 len(train_dataset) // 1,
+                                                                                 loss_mean / (i + 1)))    
+        scheduler.step()
 
-    for batch in tqdm(train_dataloader):
-        protein_ids = batch['protein_id']
-        sequences = batch['sequence']
-        annotations = batch['labels']
-        protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
-        protein_embeddings = protein_embeddings.to(device)
-        
-
-
-
-
-
+        labels=[]
+        preds=[]
+        with torch.no_grad():
+            for i,batch in tqdm(enumerate(test_dataloader)):
+                optimizer.zero_grad()
+                protein_ids = batch['protein_id']
+                sequences = batch['sequence']
+                golds = batch['labels'].squeeze(0)
+                protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
+                protein_embeddings = protein_embeddings.to(device)
+                output=combine_model(protein_embeddings).squeeze(0)
+                labels.append(golds.cpu())
+                preds.append(output.cpu())
+        roc=cal_roc(preds,labels)
+        fmax=f_max(preds,labels)
+        aupr=cal_aupr(preds,labels)
+        _, _, f1_sample=cal_f1(preds,labels)
+        print('{}  Epoch: {}, Test F1-sample: {:.2f}%, Test Fmax:{:.2f}%, Test AUPR:{:.2f}%'.
+                format(aspect, epoch + 1, 100 * f1_sample, 100 * fmax, 100 * aupr))
+        metrics_output_test[aspect]['f1_sample'].append(f1_sample)
+        metrics_output_test[aspect]['fmax'].append(fmax)
+        metrics_output_test[aspect]['aupr'].append(aupr)
+        metrics_output_test[aspect]['roc'].append(roc)       
+        f1 =fmax
+        if f1 > best_f1:
+            best_f1 = f1
+            best_model_weights = combine_model.state_dict().copy()
+            optimizer_model_weights = optimizer.state_dict().copy()
+            ckpt_path = '../data/model_checkpoint/'
+            ckpt_path = ckpt_path + "{}_final_owl2vec_esm2_t30_650M_UR50D_{}.pt".format(ctime, aspect)
+            checkpoint = {
+                'model_state_dict': best_model_weights,
+                'optimizer_state_dict': optimizer_model_weights
+            }
+            torch.save(checkpoint, ckpt_path)
 
 
