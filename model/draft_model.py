@@ -9,7 +9,8 @@ from torch_geometric.data import Data
 from torch.utils.data import DataLoader,Dataset,random_split
 from tqdm import tqdm
 import esm
-import math,datetime
+import math
+from datetime import datetime
 
 
 
@@ -41,6 +42,7 @@ num_heads = 8
 epoch_num=30
 e=math.e
 metrics_output_test = {}
+sigmoid=torch.nn.Sigmoid()
 ## go list number may not be the same as label_num, as we are creating the adjacency matrix and all ancestors are included,
 ## some terms that are not in the go_list may be included in the adjacency matrix as they are ancestors of the terms in the go_list
 for aspect in go_aspect:
@@ -75,7 +77,7 @@ for aspect in go_aspect:
     train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
     val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    combine_model=Combine_Transformer(input_dim=input_dim,hidden_dim=512,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,go_data=data).to(device)
+    combine_model=Combine_Transformer(input_dim=input_dim,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,GO_data=data).to(device)
     loss_fn=nn.BCEWithLogitsLoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
     optimizer = torch.optim.Adam(combine_model.parameters(), lr=1e-4)  # 4e-5 150M 1e-5 3B
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
@@ -100,12 +102,13 @@ for aspect in go_aspect:
             protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
             protein_embeddings = protein_embeddings.to(device)
             output=combine_model(protein_embeddings)
+            output=sigmoid(output)
             loss=loss_fn(output,golds)
             loss.backward()
             optimizer.step()
             loss_mean+=loss.item()
             print('{}  Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(aspect, epoch + 1, epoch_num, i + 1,
-                                                                                 len(train_dataset) // 1,
+                                                                                 len(train_dataset) // 64,
                                                                                  loss_mean / (i + 1)))    
         scheduler.step()
 
@@ -120,6 +123,7 @@ for aspect in go_aspect:
                 protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
                 protein_embeddings = protein_embeddings.to(device)
                 output=combine_model(protein_embeddings).squeeze(0)
+                output=sigmoid(output)
                 labels.append(golds.cpu())
                 preds.append(output.cpu())
         roc=cal_roc(preds,labels)

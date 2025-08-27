@@ -11,7 +11,8 @@ from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 import esm
-from skelearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score
+from sklearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score
+import numpy as np
 
 
 
@@ -33,9 +34,9 @@ class EmbeddingTransform(nn.Module):
         x = self.linear2(x)
         return x
 
-class GCN(torch.nn.Module):
+class GNN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
-        super(GCN, self).__init__()
+        super(GNN, self).__init__()
         self.conv1 = SAGEConv(input_dim, hidden_dim)
         self.pool1 = TopKPooling(hidden_dim, ratio=0.8)
         self.conv2 = SAGEConv(hidden_dim, output_dim)
@@ -79,7 +80,7 @@ class Combine_Transformer(nn.Module):
         self.pool1= TopKPooling(input_dim, ratio=0.8)   
         self.fc1 = EmbeddingTransform()
         self.fc2 = nn.Linear(input_dim*2, output_dim)
-        self.GCN = GCN(GO_data.x.shape[1], 16, input_dim)
+        self.GCN = GNN(GO_data.x.shape[1], 16, input_dim)
         self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim*2, num_heads=num_heads)
         self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim*2, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
@@ -148,11 +149,14 @@ def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet
     return embedding_batch
 
 def cal_f1(preds, golds):
-    preds[preds>=0.5]=1
-    preds[preds<0.5]=0
-    f1_macro = f1_score(golds, preds, average='macro')
-    f1_micro = f1_score(golds, preds, average='micro')
-    f1_sample = f1_score(golds, preds, average='samples')
+    for i in range(len(preds)):
+        _preds=np.array(preds[i].cpu())
+        _golds=np.array(golds[i].cpu())
+        _preds[_preds>=0.5]=1
+        _preds[_preds<0.5]=0
+    f1_macro = f1_score(_golds,_preds, average='macro')
+    f1_micro = f1_score(_golds,_preds, average='micro')
+    f1_sample = f1_score(_golds,_preds, average='samples')
 
     return f1_macro, f1_micro, f1_sample
 
