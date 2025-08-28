@@ -149,26 +149,65 @@ def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet
     return embedding_batch
 
 def cal_f1(preds, golds):
-    for i in range(len(preds)):
-        _preds=np.array(preds[i].cpu())
-        _golds=np.array(golds[i].cpu())
-        _preds[_preds>=0.5]=1
-        _preds[_preds<0.5]=0
-    f1_macro = f1_score(_golds,_preds, average='macro')
-    f1_micro = f1_score(_golds,_preds, average='micro')
-    f1_sample = f1_score(_golds,_preds, average='samples')
+    f1_macro = f1_micro = f1_sample = 0
+    total = len(preds)
 
-    return f1_macro, f1_micro, f1_sample
+    for i in range(total):
+        _preds = np.array(preds[i].cpu())
+        _golds = np.array(golds[i].cpu())
+        _preds[_preds >= 0.5] = 1
+        _preds[_preds < 0.5] = 0
+
+        f1_macro += f1_score(_golds, _preds, average='macro', zero_division=1)
+        f1_micro += f1_score(_golds, _preds, average='micro', zero_division=1)
+        f1_sample += f1_score(_golds, _preds, average='samples', zero_division=1)
+
+    return f1_macro/total, f1_micro/total, f1_sample/total
 
 def cal_roc(preds, golds):
-    auc_micro = roc_auc_score(golds, preds, average="samples")  
-    return auc_micro
+    # 拼接所有 batch
+    _preds = np.concatenate([np.array(p.cpu()) for p in preds], axis=0)
+    _golds = np.concatenate([np.array(g.cpu()) for g in golds], axis=0)
+    valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
+    if not valid_labels:  # 没有合法标签
+        return 0, 0, 0
+    _preds = _preds[:, valid_labels]
+    _golds = _golds[:, valid_labels]
+    try:
+        auc_macro = roc_auc_score(_golds, _preds, average="macro")
+        auc_micro = roc_auc_score(_golds, _preds, average="micro")
+    except ValueError:
+        # 如果所有标签都是0，roc_auc_score会报错
+        return 0, 0, 0
+
+    return auc_macro,auc_micro
 
 def f_max(preds,golds):
-    precision, recall, thresholds = precision_recall_curve(preds.ravel(), golds.ravel())
-    f_scores = 2 * precision * recall / (precision + recall + 1e-8)
-    return f_scores.max(), thresholds[f_scores.argmax()]
+    f_max=0
+    for i in range(len(preds)):
+        _preds = np.array(preds[i].cpu())
+        _golds = np.array(golds[i].cpu())
+        valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
+        if not valid_labels:  # 没有合法标签
+            return 0, 0, 0
+        _preds = _preds[:, valid_labels]
+        _golds = _golds[:, valid_labels]
+        precision, recall, thresholds = precision_recall_curve(_golds.ravel(),_preds.ravel())
+        f_scores = 2 * precision * recall / (precision + recall + 1e-8)
+        if f_scores.max() > f_max:
+            f_max = f_scores.max()
+            best_threshold = thresholds[f_scores.argmax()]
+    return f_max, best_threshold
 
 def cal_aupr(preds, golds):
-    aupr = average_precision_score(golds, preds, average="samples")
-    return aupr
+    _preds = np.concatenate([np.array(p.cpu()) for p in preds], axis=0)
+    _golds = np.concatenate([np.array(g.cpu()) for g in golds], axis=0)
+
+    valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
+    if not valid_labels:
+        return 0, 0
+    _preds = _preds[:, valid_labels]
+    _golds = _golds[:, valid_labels]
+    aupr_micro = average_precision_score(_golds, _preds, average="micro")
+
+    return aupr_micro
