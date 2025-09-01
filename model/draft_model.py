@@ -16,8 +16,8 @@ from datetime import datetime
 
 ctime = datetime.now().strftime("%Y%m%d%H%M%S")
 goa_path="../data/goa_human.gaf"
-sequence_path='../data/train_sequences.tsv'
-embedding_path='../data/esm_swissprot_650U_500.pt'
+sequence_path='../data/esm2650M_swissprot_human.pt'
+embedding_path='../data/esm2650M_swissprot_human.pt'
 embedding_path_owl2vec = '../data/pre_trained_model/owl2vec_go_basic.embeddings'
 onto_path='../data/go-basic.owl'
 
@@ -30,11 +30,7 @@ print('sucessfully load the protein embeddings')
 
 owl2vec_model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
 print('sucessfully load the OWL2VEC embeddings')
-
-model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
-device= 'cuda' if torch.cuda.is_available() else 'cpu'
-model.to(device)
-batch_converter = alphabet.get_batch_converter()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 input_dim = 200
 num_layers = 6
@@ -78,12 +74,12 @@ for aspect in go_aspect:
     test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
     val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     combine_model=Combine_Transformer(input_dim=input_dim,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,GO_data=data).to(device)
-    loss_fn=nn.BCEWithLogitsLoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
-    optimizer = torch.optim.Adam(combine_model.parameters(), lr=1e-4)  # 4e-5 150M 1e-5 3B
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.6)
+    loss_fn=nn.BCELoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
+    optimizer = torch.optim.AdamW(combine_model.parameters(), lr=3e-4, weight_decay=1e-2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch_num*3, eta_min=1e-5)
     if aspect not in metrics_output_test:
         metrics_output_test[aspect] = {
-                'f1_sample':[],
+                'f1_micro':[],
                 'fmax':[],
                 'aupr':[],
                 'roc':[]
@@ -99,7 +95,7 @@ for aspect in go_aspect:
             protein_ids = batch['protein_id']
             sequences = batch['sequence']
             golds = batch['labels'].cuda()
-            protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
+            protein_embeddings=load_protein_embeddings(protein_ids,embedding_path).cuda()
             protein_embeddings = protein_embeddings.to(device)
             output=combine_model(protein_embeddings)
             output=sigmoid(output)
@@ -107,20 +103,20 @@ for aspect in go_aspect:
             loss.backward()
             optimizer.step()
             loss_mean+=loss.item()
-            print('{}  Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(aspect, epoch + 1, epoch_num, i + 1,
-                                                                                 len(train_dataset) // 64,
+            if (i+1) % 10 == 0:
+                print('{}  Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(aspect, epoch + 1, epoch_num, i + 1,
+                                                                                 (len(train_dataset) // 64)+1,
                                                                                  loss_mean / (i + 1)))    
         scheduler.step()
-
+ ### ---- vliadation set ---- ###
         labels=[]
         preds=[]
         with torch.no_grad():
-            for i,batch in tqdm(enumerate(test_dataloader)):
-                optimizer.zero_grad()
+            for i,batch in tqdm(enumerate(val_dataloader)):
                 protein_ids = batch['protein_id']
                 sequences = batch['sequence']
                 golds = batch['labels'].squeeze(0)
-                protein_embeddings=load_protein_embeddings(sequences, protein_ids, model, batch_converter, alphabet).cuda()
+                protein_embeddings=load_protein_embeddings(protein_ids,embedding_path).cuda()
                 protein_embeddings = protein_embeddings.to(device)
                 output=combine_model(protein_embeddings).squeeze(0)
                 output=sigmoid(output)
@@ -129,10 +125,10 @@ for aspect in go_aspect:
         roc=cal_roc(preds,labels)
         fmax=f_max(preds,labels)
         aupr=cal_aupr(preds,labels)
-        _, _, f1_sample=cal_f1(preds,labels)
+        _, f1_micro,_,= cal_f1(preds,labels)
         print('{}  Epoch: {}, Test F1-sample: {:.2f}%, Test Fmax:{:.2f}%, Test AUPR:{:.2f}%'.
-                format(aspect, epoch + 1, 100 * f1_sample, 100 * fmax, 100 * aupr))
-        metrics_output_test[aspect]['f1_sample'].append(f1_sample)
+                format(aspect, epoch + 1, 100 * f1_micro, 100 * fmax, 100 * aupr))
+        metrics_output_test[aspect]['f1_micro'].append(f1_micro)
         metrics_output_test[aspect]['fmax'].append(fmax)
         metrics_output_test[aspect]['aupr'].append(aupr)
         metrics_output_test[aspect]['roc'].append(roc)       
@@ -140,13 +136,26 @@ for aspect in go_aspect:
         if f1 > best_f1:
             best_f1 = f1
             best_model_weights = combine_model.state_dict().copy()
-            optimizer_model_weights = optimizer.state_dict().copy()
+#           optimizer_model_weights = optimizer.state_dict().copy()
             ckpt_path = '../data/model_checkpoint/'
             ckpt_path = ckpt_path + "{}_final_owl2vec_esm2_t30_650M_UR50D_{}.pt".format(ctime, aspect)
-            checkpoint = {
-                'model_state_dict': best_model_weights,
-                'optimizer_state_dict': optimizer_model_weights
-            }
-            torch.save(checkpoint, ckpt_path)
+            torch.save(best_model_weights, ckpt_path)
+    labels, preds = [], []
+    combine_model.load_state_dict(torch.load(ckpt_path))
+    with torch.no_grad():
+        for batch in test_dataloader:
+            protein_ids = batch['protein_id']
+            golds = batch['labels'].cuda()
+            protein_embeddings = load_protein_embeddings(protein_ids, embedding_path).to(device)
 
+            output = combine_model(protein_embeddings)
+            output = sigmoid(output)
 
+            labels.append(golds.cpu())
+            preds.append(output.cpu())
+
+    roc=cal_roc(preds,labels)
+    fmax=f_max(preds,labels)
+    aupr=cal_aupr(preds,labels)
+    _, f1_micro,_,= cal_f1(preds,labels)
+    print(f"Final Test F1-micro: {100*f1_micro:.2f}%, Test Fmax: {100*fmax:.2f}%, Test AUPR: {100*aupr:.2f}%")

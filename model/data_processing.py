@@ -7,15 +7,13 @@ from owlready2 import *
 
 
 goa_path="../data/goa_human.gaf"
-sequence_path='../data/train_sequences.tsv'
-embedding_path='../data/model_vector/esm_swissprot_650U_500.pt'
+sequence_path='../data/esm2650M_swissprot_human.pt'
 ### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
 def load_filtered_protein_embeddings(
         goa_path:str,
         sequence_path:str,
         Annotation_threshold:int=5,
         GO_term_thresholad:int=20,
-        MAXLEN:int=512,
         IEA:bool=False):
     ## Read the GOA file
     goa=pd.read_csv(goa_path, sep="\t", comment='!', header=None) 
@@ -40,15 +38,15 @@ def load_filtered_protein_embeddings(
 
     filtered_protein_ids = goa_deduplicated['DB_Object_ID'].unique().tolist()
 
-    sequence = pd.read_csv(sequence_path, sep='\t')    
+    file=torch.load(sequence_path)
+    labels,sequences,_=file['labels'],file['sequences'],file['embeddings']
+    sequence=pd.DataFrame({'ID':labels,'Sequence':sequences})
     sequence = sequence[sequence['ID'].isin(filtered_protein_ids)]
-    sequence['Sequence'] = sequence['Sequence'].str.slice(0, MAXLEN)
-
 
     GO_term_list=goa_deduplicated.loc[goa_deduplicated['DB_Object_ID'].isin(filtered_protein_ids)].\
         groupby('DB_Object_ID')["GO_ID"].apply(lambda x: ";".join(set(x))).reset_index().rename(columns={"GO_ID":"GO_Terms"})
     
-    merged_df=sequence.merge(GO_term_list, left_on='ID', right_on='DB_Object_ID', how='inner')
+    merged_df=sequence.merge(GO_term_list, left_on='ID', right_on='DB_Object_ID', how='inner') ##既有序列又有注释的蛋白质
 
     # 拆分为 ID 和 Tensor
     protein_id=merged_df['ID'].tolist()
@@ -65,3 +63,8 @@ def load_owl2vec_embeddings(embedding_path,onto_path):
     onto=get_ontology(onto_path).load()
     classes = list(onto.classes())
     return model 
+
+
+
+
+## ----- handle CAFA5 data -----

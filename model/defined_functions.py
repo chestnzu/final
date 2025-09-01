@@ -17,7 +17,7 @@ import numpy as np
 
 
 class EmbeddingTransform(nn.Module):
-    def __init__(self, input_dim=1280, hidden_dim=128, output_dim=200):
+    def __init__(self, input_dim=1280, hidden_dim=512, output_dim=200):
         super().__init__()
         
         self.linear1 = nn.Linear(input_dim, hidden_dim)
@@ -38,20 +38,18 @@ class GNN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(GNN, self).__init__()
         self.conv1 = SAGEConv(input_dim, hidden_dim)
-        self.pool1 = TopKPooling(hidden_dim, ratio=0.8)
         self.conv2 = SAGEConv(hidden_dim, output_dim)
-        self.pool2 = TopKPooling(output_dim, ratio=0.8)
+        self.dropout = nn.Dropout(p=0.2)
+        self.norm = nn.LayerNorm(output_dim)
 
     def forward(self, x, edge_index):
-        batch = torch.zeros(x.size(0), dtype=torch.long).cuda()
         x = self.conv1(x, edge_index)
         x = F.relu(x)
-        x, edge_index, _, batch, _, _ = self.pool1(x, edge_index,batch=batch)
         x = self.conv2(x, edge_index)
         x = F.relu(x)
-        x, edge_index, _, batch, _, _ = self.pool2(x, edge_index,batch=batch)
-        go_pooled = x.mean(dim=0, keepdim=True)  # Global pooling
-        return go_pooled
+        self.norm(x)
+        self.dropout(x)
+        return x
 
 
 
@@ -79,21 +77,23 @@ class Combine_Transformer(nn.Module):
         self.go_data = GO_data
         self.pool1= TopKPooling(input_dim, ratio=0.8)   
         self.fc1 = EmbeddingTransform()
-        self.fc2 = nn.Linear(input_dim*2, output_dim)
-        self.GCN = GNN(GO_data.x.shape[1], 16, input_dim)
-        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim*2, num_heads=num_heads)
-        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim*2, nhead=num_heads)
+        self.fc2 = nn.Linear(self.go_data.x.shape[0], input_dim)
+        self.fc3 = nn.Linear(input_dim, output_dim)
+        self.GCN = GNN(GO_data.x.shape[1],256, input_dim)
+        
+        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
 
     
     def forward(self, protein_vectors):
-        protein_vectors = self.fc1(protein_vectors) ## 将ESM2的1280维向量转换为200维向量
-        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index) ## 将OWL2VEC的200维向量作为输入，放入GCN中，并加上GO的邻接矩阵，进一步训练，生成对应的200维向量
-        go_expand= go_vectors.expand(protein_vectors.size(0),-1)  # 扩展维度以匹配蛋白质向量的批次大小
-        combine_features = torch.cat((protein_vectors, go_expand), dim=1)
+        protein_vectors = self.fc1(protein_vectors) ## 将ESM2的1280维向量转换为200维向量， 64*200
+        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index) ##
+        combine_features = protein_vectors @ torch.transpose(go_vectors,0,1)  ## 计算蛋白质与GO term的相关性
+        combine_features = self.fc2(combine_features)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
         transformer_output = self.transformer_encoder(attn_output)
-        output = self.fc2(transformer_output)
+        output = self.fc3(transformer_output)
         return output
 
 
@@ -131,21 +131,16 @@ def create_adjacency_matrix(onto_path,go_list,namespace):
                 adj_matrix[idx, parent_idx] = 1
     return adj_matrix, enc,label_list
 
-def load_protein_embeddings(sequences,protein_ids,model,batch_converter,alphabet):
-    batch_input = [(protein_id, seq) for protein_id, seq in zip(protein_ids, sequences)]
+def load_protein_embeddings(protein_ids, embedding_path):
     sequence_representations = []
-    for i in range(0,len(protein_ids),2):
-        micro_batch = batch_input[i:i+2]
-        batch_labels,batch_strs,batch_tokens = batch_converter(micro_batch)
-        batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
-
-        with torch.no_grad():
-            batch_tokens = batch_tokens.cuda()
-            results = model(batch_tokens, repr_layers=[33])
-        token_representations = results["representations"][33].detach().cpu()
-        for i, tokens_len in enumerate(batch_lens):
-            sequence_representations.append(token_representations[i, 1 : tokens_len - 1].mean(0))
-    embedding_batch= torch.stack(sequence_representations, dim=0)
+    label,_,embedding=torch.load(embedding_path)
+    for pid in protein_ids:
+        if pid in label:
+            idx = label.index(pid)
+            sequence_representations.append(embedding[idx])
+        else:
+            sequence_representations.append(torch.zeros(1280))
+    embedding_batch = torch.stack(sequence_representations)
     return embedding_batch
 
 def cal_f1(preds, golds):
@@ -170,17 +165,17 @@ def cal_roc(preds, golds):
     _golds = np.concatenate([np.array(g.cpu()) for g in golds], axis=0)
     valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
     if not valid_labels:  # 没有合法标签
-        return 0, 0, 0
+        return 0
     _preds = _preds[:, valid_labels]
     _golds = _golds[:, valid_labels]
     try:
-        auc_macro = roc_auc_score(_golds, _preds, average="macro")
+        #auc_macro = roc_auc_score(_golds, _preds, average="macro")
         auc_micro = roc_auc_score(_golds, _preds, average="micro")
     except ValueError:
         # 如果所有标签都是0，roc_auc_score会报错
-        return 0, 0, 0
+        return 0
 
-    return auc_macro,auc_micro
+    return auc_micro
 
 def f_max(preds,golds):
     f_max=0
@@ -189,7 +184,7 @@ def f_max(preds,golds):
         _golds = np.array(golds[i].cpu())
         valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
         if not valid_labels:  # 没有合法标签
-            return 0, 0, 0
+            return 0
         _preds = _preds[:, valid_labels]
         _golds = _golds[:, valid_labels]
         precision, recall, thresholds = precision_recall_curve(_golds.ravel(),_preds.ravel())
@@ -197,7 +192,7 @@ def f_max(preds,golds):
         if f_scores.max() > f_max:
             f_max = f_scores.max()
             best_threshold = thresholds[f_scores.argmax()]
-    return f_max, best_threshold
+    return f_max
 
 def cal_aupr(preds, golds):
     _preds = np.concatenate([np.array(p.cpu()) for p in preds], axis=0)
@@ -205,7 +200,7 @@ def cal_aupr(preds, golds):
 
     valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
     if not valid_labels:
-        return 0, 0
+        return 0
     _preds = _preds[:, valid_labels]
     _golds = _golds[:, valid_labels]
     aupr_micro = average_precision_score(_golds, _preds, average="micro")
