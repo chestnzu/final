@@ -71,31 +71,53 @@ class protein_loader(Dataset):
         return {'protein_id': protein_id, 'sequence':sequence, 'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
-    def __init__(self, input_dim, output_dim,num_layers,num_heads,GO_data):
+    def __init__(self, input_dim, output_dim, num_layers, num_heads, GO_data):
         super(Combine_Transformer, self).__init__()
         self.heads = num_heads
         self.go_data = GO_data
-        self.pool1= TopKPooling(input_dim, ratio=0.8)   
         self.fc1 = EmbeddingTransform()
         self.fc2 = nn.Linear(self.go_data.x.shape[0], input_dim)
         self.fc3 = nn.Linear(input_dim, output_dim)
-        self.GCN = GNN(GO_data.x.shape[1],256, input_dim)
+        self.GCN = GNN(GO_data.x.shape[1], 256, input_dim)
         
-        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads)
-        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
+        # 优化的norm配置
+        self.norm1 = nn.BatchNorm1d(input_dim).to(torch.float32)  # GCN后：图数据用BatchNorm
+        self.norm2 = nn.LayerNorm(input_dim).to(torch.float32)    # 融合特征后：稳定注意力输入
+        # norm3 可以省略，因为TransformerEncoder内部有LayerNorm
+        
+        self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads, 
+                                                   dropout=0.1, batch_first=True)
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, 
+                                                           dropout=0.1, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
-
-    
+        
+        self.dropout = nn.Dropout(0.1)
+   
     def forward(self, protein_vectors):
-        protein_vectors = self.fc1(protein_vectors) ## 将ESM2的1280维向量转换为200维向量， 64*200
-        go_vectors= self.GCN(self.go_data.x, self.go_data.edge_index) ##
-        combine_features = protein_vectors @ torch.transpose(go_vectors,0,1)  ## 计算蛋白质与GO term的相关性
+        # 1. 蛋白质特征变换
+        protein_vectors = self.fc1(protein_vectors)
+        
+        # 2. GO特征提取 + BatchNorm（图卷积后用BatchNorm）
+        go_vectors = self.GCN(self.go_data.x, self.go_data.edge_index)
+        go_vectors = self.norm1(go_vectors)
+        go_vectors = F.relu(go_vectors)  # 激活函数
+        
+        # 3. 特征融合
+        combine_features = protein_vectors @ torch.transpose(go_vectors, 0, 1)
         combine_features = self.fc2(combine_features)
+        combine_features = self.dropout(combine_features)
+        
+        # 4. LayerNorm + 多头注意力（序列数据用LayerNorm）
+        combine_features = self.norm2(combine_features)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
+        
+        # 5. Transformer编码器（内部已有LayerNorm和残差连接）
         transformer_output = self.transformer_encoder(attn_output)
+        
+        # 6. 最终输出
         output = self.fc3(transformer_output)
+        output = torch.sigmoid(output)
         return output
-
 
 
 
@@ -206,3 +228,43 @@ def cal_aupr(preds, golds):
     aupr_micro = average_precision_score(_golds, _preds, average="micro")
 
     return aupr_micro
+
+def evaluate_annotations(real_annots, pred_annots):
+    """
+    Computes Fmax, Smin, WFmax and Average IC
+    Args:
+       real_annots (set): Set of real GO classes
+       pred_annots (set): Set of predicted GO classes
+    """
+    total = 0
+    p = 0.0
+    r = 0.0
+    p_total= 0
+    fps = []
+    fns = []
+    for i in range(len(real_annots)):
+        if len(real_annots[i]) == 0:
+            continue
+        tp = set(real_annots[i]).intersection(set(pred_annots[i]))
+        fp = pred_annots[i] - tp
+        fn = real_annots[i] - tp
+        fps.append(fp)
+        fns.append(fn)
+        tpn = len(tp)
+        fpn = len(fp)
+        fnn = len(fn)
+        total += 1
+        recall = tpn / (1.0 * (tpn + fnn)) if (tpn + fnn) > 0 else 0
+        r += recall
+        if len(pred_annots[i]) > 0:
+            p_total += 1
+            precision = tpn / (1.0 * (tpn + fpn)) if (tpn + fpn) > 0 else 0
+            p += precision
+
+    r /= total if total > 0 else 0
+    if p_total > 0:
+        p /= p_total
+    f = 0.0
+    if p + r > 0:
+        f = 2 * p * r / (p + r)
+    return f, p, r, fps, fns
