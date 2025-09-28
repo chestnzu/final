@@ -27,8 +27,8 @@ def main(go_file, data_file, sim_file, species):
     df = pd.read_pickle(data_file)
     proteins = set(df['proteins'].values)
     if species != 'all':
-        df = df[df['orgs'] == species]
-        df = df.reset_index()
+        df = df[df['species'] == species]
+        df = df.reset_index(drop=True)
     
     print("DATA FILE" ,len(df))
         
@@ -38,7 +38,7 @@ def main(go_file, data_file, sim_file, species):
         index = []
         for i, row in enumerate(df.itertuples()):
             ok = False
-            for term in row.prop_annotations:
+            for term in row.propagate_annotation:
                 if go.get_namespace(term) == NAMESPACES[ont]:
                     cnt[term] += 1
                     ok = True

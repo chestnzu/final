@@ -26,12 +26,12 @@ EXP_CODES = set([
     'HTP', 'HDA', 'HMP', 'HGI', 'HEP'])
 
 # CAFA4 Targets
-CAFA_TARGETS = set([
-    '287', '3702', '4577', '6239', '7227', '7955', '9606', '9823', '10090',
-    '10116', '44689', '83333', '99287', '226900', '243273', '284812', '559292'])
+# CAFA_TARGETS = set([
+#     '287', '3702', '4577', '6239', '7227', '7955', '9606', '9823', '10090',
+#     '10116', '44689', '83333', '99287', '226900', '243273', '284812', '559292'])
 
-def is_cafa_target(org):
-    return org in CAFA_TARGETS
+# def is_cafa_target(org):
+#     return org in CAFA_TARGETS
 
 def is_exp_code(code):
     return code in EXP_CODES

@@ -21,17 +21,17 @@ logging.basicConfig(level=logging.INFO)
     '--out-file', '-o', default='../data/swissprot_exp.fa',
     help='Fasta file')
 @ck.option(
-    '--orgs', '-n', default='all',
+    '--species', '-n', default='all',
     help='species to include,e.g., 9606')
 
-def main(data_file, out_file,orgs):
+def main(data_file, out_file,species):
     # Load interpro data
     df = pd.read_pickle(data_file)
-    df['orgs']=df['orgs'].astype(str)
+    df['species']=df['species'].astype(str)
     print(len(df)) 
     with open(out_file, 'w') as f:
         for row in df.itertuples():
-            if row.orgs== orgs or orgs == 'all':
+            if row.species== species or species == 'all':
                 prot_id = row.proteins
                 f.write('>' + prot_id + '\n')
                 f.write(row.sequences + '\n')

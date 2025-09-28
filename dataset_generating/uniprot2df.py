@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import gzip
 import logging
-from basics import Ontology, is_exp_code, is_cafa_target, FUNC_DICT
+from basics import Ontology, is_exp_code, FUNC_DICT
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
@@ -26,13 +26,13 @@ from Bio.SeqRecord import SeqRecord
     help='Device for ESM2 model')
 def main(swissprot_file, out_file, device):
     go = Ontology('../data/go.obo', with_rels=True)
-    proteins, accessions, sequences, annotations, _, orgs, _, _ = load_data(swissprot_file)
+    proteins, accessions, sequences, annotations, _, species, _, _ = load_data(swissprot_file)
     df = pd.DataFrame({
         'proteins': proteins,
         'accessions': accessions,
         'sequences': sequences,
         'annotations': annotations,
-        'orgs': orgs
+        'species': species
     })
 
     logging.info('Filtering proteins with experimental annotations')
@@ -50,10 +50,10 @@ def main(swissprot_file, out_file, device):
         index.append(i)
         annotations.append(annots)
     df = df.iloc[index]
-    df = df.reset_index()
+    df = df.reset_index(drop=True)
     df['exp_annotations'] = annotations
 
-    prop_annotations = []
+    propagate_annotation = []
     for i, row in df.iterrows():
         # Propagate annotations
         annot_set = set()
@@ -61,16 +61,9 @@ def main(swissprot_file, out_file, device):
         for go_id in annots:
             annot_set |= go.get_ancestors(go_id)
         annots = list(annot_set)
-        prop_annotations.append(annots)
-    df['prop_annotations'] = prop_annotations
+        propagate_annotation.append(annots)
+    df['propagate_annotation'] = propagate_annotation
 
-    cafa_target = []
-    for i, row in enumerate(df.itertuples()):
-        if is_cafa_target(row.orgs):
-            cafa_target.append(True)
-        else:
-            cafa_target.append(False)
-    df['cafa_target'] = cafa_target
 
     fasta_file = os.path.splitext(swissprot_file)[0] + '.fa'
     with open(fasta_file, 'w') as f:
@@ -96,7 +89,7 @@ def load_data(swissprot_file):
        swissprot_file (string): A path to the data file
     Returns:
        Tuple of 8 lists (proteins, accessions, sequences, string_ids,
-       orgs, genes, interpros)
+       species, genes, interpros)
     """
     
     proteins = list()
@@ -104,7 +97,7 @@ def load_data(swissprot_file):
     sequences = list()
     annotations = list()
     string_ids = list()
-    orgs = list()
+    species = list()
     genes = list()
     interpros = list()
     with gzip.open(swissprot_file, 'rt') as f:
@@ -125,7 +118,7 @@ def load_data(swissprot_file):
                     sequences.append(seq)
                     annotations.append(annots)
                     string_ids.append(strs)
-                    orgs.append(org)
+                    species.append(org)
                     genes.append(gene_id)
                     interpros.append(iprs)
                 prot_id = items[1]
@@ -171,10 +164,10 @@ def load_data(swissprot_file):
         sequences.append(seq)
         annotations.append(annots)
         string_ids.append(strs)
-        orgs.append(org)
+        species.append(org)
         genes.append(gene_id)
         interpros.append(iprs)
-    return proteins, accessions, sequences, annotations, string_ids, orgs, genes, interpros
+    return proteins, accessions, sequences, annotations, string_ids, species, genes, interpros
 
 
 if __name__ == '__main__':
