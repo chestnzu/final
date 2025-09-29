@@ -30,7 +30,7 @@ def run():
     model.eval()  # Set the model to evaluation mode
     print('load model successfully')
     batch_converter = alphabet.get_batch_converter()
-    seqs_info = {record.id.split('|')[1]: str(record.seq)[:maxlen] for record in SeqIO.parse(input_path, "fasta")}
+    seqs_info = {record.id: str(record.seq)[:maxlen] for record in SeqIO.parse(input_path, "fasta")}
     sequence_representations = []
     items = list(seqs_info.items())
     for batch in tqdm(range(0, len(seqs_info), 100),desc="Extracting embeddings"):

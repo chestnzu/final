@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import TopKPooling,SAGEConv
-from torch_geometric.utils import from_networkx
+from torch_geometric.utils import to_dense_adj
 import networkx as nx
 import obonet,math
 from owlready2 import get_ontology
@@ -13,25 +13,20 @@ from torch.utils.data import Dataset
 import esm
 from sklearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score
 import numpy as np
+import obonet
+from dataset_generating.basics import Ontology
 
 
 
 class EmbeddingTransform(nn.Module):
-    def __init__(self, input_dim=1280, hidden_dim=512, output_dim=200):
-        super().__init__()
-        
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        torch.nn.init.kaiming_normal_(self.linear1.weight)
-        self.linear1.bias.data.fill_(0.01)
+    def __init__(self, input_dim=1280, output_dim=200):
+        super().__init__()       
+        self.linear1 = nn.Linear(input_dim, output_dim)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(hidden_dim, output_dim)
-        torch.nn.init.kaiming_normal_(self.linear2.weight)
-        self.linear2.bias.data.fill_(0.01)
         
     def forward(self, x):
         x = self.linear1(x)
         x = self.relu(x)
-        x = self.linear2(x)
         return x
 
 class GNN(torch.nn.Module):
@@ -52,7 +47,87 @@ class GNN(torch.nn.Module):
         return x
 
 
+class Attention_layer(nn.Module):
+    def  __init__(self, in_channels, hid_channels, out_channels):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(in_channels, hid_channels),
+            nn.ReLU(),
+            nn.Linear(hid_channels, out_channels),
+        )
+    def forward(self, x):
+        ### 输入：(batch,len/batch,feature )或者 (batch,feature )
+        ### 输出：每个蛋白质对每个蛋白质的邻接矩阵(batch, seq_len, seq_len) 或者 (batch)
+        ####方法一
+        if x.dtype == torch.float64:
+            x = x.float()
+        Z = self.model(x)#torch.Size([64, 512])-->torch.Size([64, 512])
+        score = torch.mm(Z, Z.t())
+        #W = torch.sigmoid(score)  # 归一化为0-1权重
+        W = F.softmax(score, dim=1).to(torch.float64) # 归一化为0-1权重
+        return W
 
+        ####方法二
+        # z = self.model(x)
+        # W = torch.bmm(z, z.transpose(1, 2))  # (batch, seq_len, seq_len)
+
+class SelfAttention(nn.Module):
+    def __init__(self, in_features, out_features):
+        super(SelfAttention, self).__init__()
+
+        self.W = nn.Linear(in_features, out_features).to(torch.float64)
+        self.tanh = nn.Tanh()
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x):
+        # x shape (len, in_features)
+        h = self.W(x)  # (len, out_features)
+        attention = torch.matmul(h, h.transpose(0, 1))
+        attention = self.softmax(self.tanh(attention))
+        attention = torch.matmul(attention, h) ## (len, out_features)
+        return self.tanh(attention)
+
+class GoFeature(nn.Module):
+    def __init__(self, in_features,classes,out_channels):
+        super(GoFeature, self).__init__()
+
+        self.atten = SelfAttention(in_features=in_features, out_features=classes).to(torch.float64)
+        self.conv1 = nn.Conv1d(in_channels= 1, out_channels=32, kernel_size=3, padding=1).to(torch.float64)
+        self.conv2 = nn.Conv1d(in_channels= 32, out_channels = out_channels, kernel_size=3, padding=1).to(torch.float64)
+    def forward(self, x):
+        ### (batch,feature) -> (batch,class,new_feature)
+        x = torch.relu(self.atten(x))# torch.Size([64, 512])->torch.Size([64, nb_class])
+        x = x.unsqueeze(dim=-1).permute(0,2,1) #torch.Size([64, nb_class])-->torch.Size([64, nb_class,1])-->torch.Size([64,1,nb_class])
+        #x = self.conv(x).permute(0, 2, 1) #torch.Size([64,1,nb_class])->torch.Size([64,new_feature,nb_class])->torch.Size([64,nb_class,new_feature])
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x)).permute(0, 2, 1)
+        return x
+
+class cheb_conv_K(nn.Module):
+    def __init__(self, K, in_channels, out_channels, device):
+        super(cheb_conv_K, self).__init__()
+        self.K = K
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.DEVICE = device
+        self.Theta = nn.Parameter(torch.FloatTensor(K, in_channels, out_channels).to(self.DEVICE)).to(torch.float64)
+
+    def forward(self, x, adj):
+        '''
+        Chebyshev graph convolution operation
+        切比雪夫图卷积运算
+        :param x: (batch_size, class, F_in),邻接矩阵 (batch_size, ... class, ... class)
+        :return: (batch_size, class, F_out)
+        '''
+        graph_signal = x  # (batch_size, class, F_in)
+        T_k_with_at = adj  # (batch_size, class, class)
+        output = torch.zeros_like(graph_signal).to(self.DEVICE)  # (batch_size, class, F_out)
+        for k in range(self.K):
+            theta_k = self.Theta[k]  # (in_channels, out_channels)
+            rhs = torch.bmm(T_k_with_at, graph_signal)  # (batch_size, class, F_in) * (batch_size, class, class) -> (batch_size, class, F_in)
+            output += torch.matmul(rhs, theta_k)  # (batch_size, class, F_in) * (F_in, F_out) -> (batch_size, class, F_out)
+
+        return F.relu(output)  # (batch_size, class, F_out)
 
 class protein_loader(Dataset):
     def __init__(self, dataset):
@@ -71,43 +146,52 @@ class protein_loader(Dataset):
         return {'protein_id': protein_id, 'sequence':sequence, 'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
-    def __init__(self, input_dim, output_dim, num_layers, num_heads, GO_data):
+    def __init__(self, input_dim, num_layers, num_heads, GO_data,out_channels):
         super(Combine_Transformer, self).__init__()
         self.heads = num_heads
         self.go_data = GO_data
-        self.fc1 = EmbeddingTransform()
+        self.fc1 = EmbeddingTransform(output_dim=input_dim)
         self.fc2 = nn.Linear(self.go_data.x.shape[0], input_dim)
-        self.fc3 = nn.Linear(input_dim, output_dim)
-        self.GCN = GNN(GO_data.x.shape[1], 256, input_dim)
+        self.fc3 = nn.Linear(input_dim, 1)
+        self.GCN = cheb_conv_K(K=3, in_channels=input_dim, out_channels=self.data.x.shape[0], device='cuda')
+        self.convert_go_feature = GoFeature(in_features=input_dim, classes=GO_data.x.shape[0], out_channels=input_dim)
+        self.training = True
         
         # 优化的norm配置
         self.norm1 = nn.BatchNorm1d(input_dim).to(torch.float32)  # GCN后：图数据用BatchNorm
         self.norm2 = nn.LayerNorm(input_dim).to(torch.float32)    # 融合特征后：稳定注意力输入
+        self.norm3 = nn.LayerNorm(input_dim).to(torch.float32)
         # norm3 可以省略，因为TransformerEncoder内部有LayerNorm
-        
+        self.functionAttention = Attention_layer(in_channels=input_dim, hid_channels=256, out_channels=self.data.x.shape[0])
         self.multihead_attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads, 
-                                                   dropout=0.1, batch_first=True)
+                                                dropout=0.1, batch_first=True)
         self.transformer_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, 
                                                            dropout=0.1, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
-        
+        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)     
         self.dropout = nn.Dropout(0.1)
+        
    
     def forward(self, protein_vectors):
-        # 1. 蛋白质特征变换
+        ## 1. 蛋白质特征变换
+        ## 输入特征为 batch * 1280, 输出为 batch * 200
         protein_vectors = self.fc1(protein_vectors)
-        
-        # 2. GO特征提取 + BatchNorm（图卷积后用BatchNorm）
-        go_vectors = self.GCN(self.go_data.x, self.go_data.edge_index)
-        go_vectors = self.norm1(go_vectors)
-        go_vectors = F.relu(go_vectors)  # 激活函数
-        
-        # 3. 特征融合
-        combine_features = protein_vectors @ torch.transpose(go_vectors, 0, 1)
-        combine_features = self.fc2(combine_features)
-        combine_features = self.dropout(combine_features)
-        
-        # 4. LayerNorm + 多头注意力（序列数据用LayerNorm）
+        protein_vectors_norm = self.norm1(protein_vectors)
+        ## 2. 将蛋白质特征转换为GO维度的特征
+        protein_go_features = self.convert_go_feature(protein_vectors_norm)  # batch * GO_term_num * 200
+        ## 3. GO特征图卷积 + BatchNorm + Dropout
+        go_features = self.go_data.x.unsqueeze(0).expand(protein_vectors.shape[0],-1,-1)  # batch * GO_term_num * 200
+        go_adj = to_dense_adj(self.go_data.edge_index)[0]
+        go_adj = go_adj.unsqueeze(0).expand(protein_vectors.shape[0],-1,-1) ## batch * GO_term_num * GO_term_num
+        attention_adj = self.functionAttention(go_features)  ## batch * GO_term_num * GO_term_num
+        go_adj = go_adj +torch.softmax(attention_adj,dim=1) ## batch * GO_term_num * GO_term_num
+        go_output = self.GCN(go_features,go_adj) +go_features ## batch * GO_term_num * 200
+        go_output = self.norm3(go_output)
+        go_features = F.dropout(go_output, p=0.1, training=self.training)
+
+        ## 4. 特征融合
+        combine_features = protein_go_features + go_features  # batch * GO_term_num * 200
+        # combine_features = self.fc2(combine_features)
+        # combine_features = self.dropout(combine_features)
         combine_features = self.norm2(combine_features)
         attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
         
@@ -115,43 +199,22 @@ class Combine_Transformer(nn.Module):
         transformer_output = self.transformer_encoder(attn_output)
         
         # 6. 最终输出
-        output = self.fc3(transformer_output)
-        output = torch.sigmoid(output)
+        output = self.fc3(transformer_output).squeeze(-1)  # batch * GO_term_num
         return output
 
 
 
-def create_adjacency_matrix(onto_path,go_list,namespace):
+def create_edge_index(onto_path,go_list):
     enc=LabelEncoder()
-    onto=get_ontology(onto_path).load()
-    label_list=[]
-    for cls in go_list:
-        cls=onto.search_one(iri=cls.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
-        if cls.hasOBONamespace and cls.hasOBONamespace[0] == namespace:
-            ancestors = cls.ancestors()
-            if len(ancestors) > 0:
-                label_list.extend(x.name for x in ancestors)
-                label_list.append(cls.name)
-                label_list= list(set(label_list))
-        else:
-            continue
-    label_list = [x for x in label_list if x[:2]=='GO']  # Filter out terms with length > 14
-    label_space=enc.fit_transform(label_list)
-    label_num=len(label_space)
-    print(label_num)
-    adj_matrix=torch.zeros((label_num,label_num)).cuda()
-    valid_list=list(set(go_list) & set(label_list))
-    for term in valid_list:
-        term=onto.search_one(iri=term.replace('GO_','http://purl.obolibrary.org/obo/GO_'))
-        parents=term.is_a
-        idx=enc.transform([term.name])
-        if len(parents) == 0:
-            continue
-        for parent in parents:
-            if str(parent) != 'owl.Thing' and len(str(parent))<=14:
-                parent_idx = enc.transform([parent.name])
-                adj_matrix[idx, parent_idx] = 1
-    return adj_matrix, enc,label_list
+    onto = obonet.read_obo(onto_path)
+    enc.fit(go_list)
+    mapping={go_id: idx for idx, go_id in enumerate(enc.classes_)}
+    onto_1=nx.relabel_nodes(onto, mapping)
+    go_list_digit=[idx for idx, _ in enumerate(enc.classes_)]
+    edges=[(a,b) for a,b in onto_1.edges() if a in go_list_digit and b in go_list_digit]
+    src,dst = zip(*edges)
+    edge_index=torch.tensor([src,dst],dtype=torch.long)
+    return edge_index, enc
 
 def load_protein_embeddings(protein_ids, embedding_path):
     sequence_representations = []
@@ -246,8 +309,8 @@ def evaluate_annotations(real_annots, pred_annots):
         if len(real_annots[i]) == 0:
             continue
         tp = set(real_annots[i]).intersection(set(pred_annots[i]))
-        fp = pred_annots[i] - tp
-        fn = real_annots[i] - tp
+        fp = set(pred_annots[i]) - tp
+        fn = set(real_annots[i]) - tp
         fps.append(fp)
         fns.append(fn)
         tpn = len(tp)
@@ -268,3 +331,13 @@ def evaluate_annotations(real_annots, pred_annots):
     if p + r > 0:
         f = 2 * p * r / (p + r)
     return f, p, r, fps, fns
+
+
+def build_dataset(dataset):
+    dataset=dataset[['proteins','sequences','propagate_annotation']]
+    protein_name=list(dataset['proteins'].values)
+    sequence=list(dataset['sequences'].values)
+    labels=list(dataset['propagate_annotation'].values)
+    dataset=zip(sequence,protein_name,labels)
+    dataset=protein_loader(dataset)
+    return dataset

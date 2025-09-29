@@ -11,7 +11,8 @@ from tqdm import tqdm
 import esm
 import math
 from datetime import datetime
-
+from torch.optim.lr_scheduler import MultiStepLR
+from itertools import chain 
 
 
 ctime = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -24,11 +25,11 @@ onto_path='../data/go-basic.owl'
 go_aspect=['biological_process', 'molecular_function', 'cellular_component']
 
 ### 数据预处理，找出所有包含有Annotation,且Annotation数量大于20的蛋白质
-protein_ids,protein_sequence,go_annotation_list,go_list=load_filtered_protein_embeddings(goa_path,sequence_path)
+
 go_labels={'biological_process':[], 'molecular_function':[], 'cellular_component':[]}
 print('sucessfully load the protein embeddings')
 
-owl2vec_model=load_owl2vec_embeddings(embedding_path_owl2vec,onto_path)
+owl2vec_model=load_owl2vec_embeddings(embedding_path_owl2vec)
 print('sucessfully load the OWL2VEC embeddings')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,15 +40,25 @@ epoch_num=30
 e=math.e
 metrics_output_test = {}
 sigmoid=torch.nn.Sigmoid()
+# protein_ids,protein_sequence,go_annotation_list,go_dict=load_filtered_protein_embeddings(goa_path,sequence_path)
 ## go list number may not be the same as label_num, as we are creating the adjacency matrix and all ancestors are included,
 ## some terms that are not in the go_list may be included in the adjacency matrix as they are ancestors of the terms in the go_list
 for aspect in go_aspect:
-    adj_matrix,enc,label_list=create_adjacency_matrix(onto_path,go_list,aspect)
-    print('successfully create adjacency matrix for {}'.format(aspect))
-    edge_index,edge_attr= dense_to_sparse(adj_matrix)
-    edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
-    label_num=len(label_list)
 
+    ## 1. load data
+    train_data=pd.read_pickle('../data/dataset/{}/train_data.pkl'.format(aspect))
+    valid_data=pd.read_pickle('../data/dataset/{}/valid_data.pkl'.format(aspect))
+    test_data=pd.read_pickle('../data/dataset/{}/test_data.pkl'.format(aspect))
+
+    ## 2. create edge_index for all annotated GO terms 
+    all_data=pd.concat([train_data,valid_data,test_data],axis=0)
+    annotated_go_term=list(set(chain.from_iterable(all_data.propagate_annotations)))
+    edge_index,enc=create_edge_index(onto_path,aspect)
+    edge_index=edge_index.to('cuda' if torch.cuda.is_available() else 'cpu')
+    print('successfully create edge index for {}'.format(aspect))
+    label_num=len(enc.classes_)
+
+    ## 3. create graph data for GNN
     embedding_list=[]
     for i in range(label_num):
         node=enc.inverse_transform([i])[0]
@@ -56,38 +67,19 @@ for aspect in go_aspect:
     embedding_vector=embedding_vector
     data=Data(x=embedding_vector,edge_index=edge_index).to(device)
 
-    removed_idx=[]
-    for idx,x in enumerate(go_annotation_list):
-        x1 = x.split(';')
-        temp_list=[term for term in x1 if term in label_list]
-        if len(temp_list) == 0:
-            #go_labels[aspect].append([0]*label_num)
-            removed_idx.append(idx)
-        else:
-            digit_labels=enc.transform(temp_list)
-            go_labels[aspect].append([1 if i in digit_labels else 0 for i in range(label_num)])
-    protein_sequence = [seq for i, seq in enumerate(protein_sequence) if i not in removed_idx]
-    protein_ids = [pid for i, pid in enumerate(protein_ids) if i not in removed_idx]
-
-    datasets=zip(protein_sequence, protein_ids, go_labels[aspect])
-    train_size= int(0.8 * len(protein_ids))
-    val_size = int(0.1 * len(protein_ids))
-    test_size = len(protein_ids) - train_size - val_size
-    datasets= protein_loader(datasets)
-    true_labels=np.array(go_labels[aspect])
-    pos_counts = true_labels.sum(axis=0)
-    neg_counts = true_labels.shape[0] - pos_counts
-    pos_weight = torch.sqrt(torch.tensor(neg_counts / (pos_counts + 1e-8),dtype=torch.float32)).to(device)
-    
-
-    train_dataset, val_dataset, test_dataset = random_split(datasets, [train_size, val_size, test_size])
+    ## 4. create protein dataset
+    train_dataset=build_dataset(train_dataset)
+    val_dataset=build_dataset(valid_data)
+    test_dataset=build_dataset(test_data)
     train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
     val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+
+    ## 5. model training
     combine_model=Combine_Transformer(input_dim=input_dim,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,GO_data=data).to(device)
     loss_fn=nn.BCELoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
-    optimizer = torch.optim.AdamW(combine_model.parameters(), lr=1e-4, weight_decay=1e-2)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch_num, eta_min=1e-5)
+    optimizer = torch.optim.AdamW(combine_model.parameters(), lr=5e-4)
+    scheduler = MultiStepLR(optimizer, milestones=[5, 20], gamma=0.1)
     if aspect not in metrics_output_test:
         metrics_output_test[aspect] = {
                 'f1_micro':[],
@@ -100,6 +92,7 @@ for aspect in go_aspect:
         optimizer_model_weights = None
 
     for epoch in range(epoch_num):
+        combine_model.train()
         loss_mean=0
         for i,batch in tqdm(enumerate(train_dataloader)):
             optimizer.zero_grad()
@@ -109,6 +102,7 @@ for aspect in go_aspect:
             protein_embeddings=load_protein_embeddings(protein_ids,embedding_path).cuda()
             protein_embeddings = protein_embeddings.to(device)
             output=combine_model(protein_embeddings)
+            output=sigmoid(output)
             loss=loss_fn(output,golds)
             loss.backward()
             optimizer.step()
@@ -119,6 +113,7 @@ for aspect in go_aspect:
                                                                                  loss_mean / (i + 1)))    
         scheduler.step()
  ### ---- vliadation set ---- ###
+        combine_model.eval()
         labels=[]
         preds=[]
         with torch.no_grad():
@@ -132,12 +127,14 @@ for aspect in go_aspect:
                 labels.append(golds.cpu())
                 preds.append(output.cpu())
         roc=cal_roc(preds,labels)
-        fmax=f_max(preds,labels)
+        fmax,_,_,_,_=evaluate_annotations(preds,labels)
         aupr=cal_aupr(preds,labels)
-        _, f1_micro,_,= cal_f1(preds,labels)
-        print('{}  Epoch: {}, Test F1-micro: {:.2f}%, Test Fmax:{:.2f}%, Test AUPR:{:.2f}%'.
-                format(aspect, epoch + 1, 100 * f1_micro, 100 * fmax, 100 * aupr))
-        metrics_output_test[aspect]['f1_micro'].append(f1_micro)
+#        _, f1_micro,_,= cal_f1(preds,labels)
+        # print('{}  Epoch: {}, Test F1-micro: {:.2f}%, Test Fmax:{:.2f}%, Test AUPR:{:.2f}%'.
+        #         format(aspect, epoch + 1, 100 * f1_micro, 100 * fmax, 100 * aupr))
+        print('{}  Epoch: {}, Test Fmax:{:.2f}%, Test AUPR:{:.2f}%'.
+                format(aspect, epoch + 1, 100 * fmax, 100 * aupr))        
+#        metrics_output_test[aspect]['f1_micro'].append(f1_micro)
         metrics_output_test[aspect]['fmax'].append(fmax)
         metrics_output_test[aspect]['aupr'].append(aupr)
         metrics_output_test[aspect]['roc'].append(roc)       
@@ -165,5 +162,5 @@ for aspect in go_aspect:
     roc=cal_roc(preds,labels)
     fmax=f_max(preds,labels)
     aupr=cal_aupr(preds,labels)
-    _, f1_micro,_,= cal_f1(preds,labels)
-    print(f"Final Test F1-micro: {100*f1_micro:.2f}%, Test Fmax: {100*fmax:.2f}%, Test AUPR: {100*aupr:.2f}%")
+    # _, f1_micro,_,= cal_f1(preds,labels)
+    print(f"F, Test Fmax: {100*fmax:.2f}%, Test AUPR: {100*aupr:.2f}%")
