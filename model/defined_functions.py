@@ -131,10 +131,11 @@ class cheb_conv_K(nn.Module):
 
 class protein_loader(Dataset):
     def __init__(self, dataset):
-        sequences,protein_ids,annotations= zip(*dataset)
+        sequences,protein_ids,exp_annotations,annotations= zip(*dataset)
         self.sequences = sequences
         self.protein_ids = protein_ids
         self.annotations = annotations ## one-hot vector, encoding which GO terms are annotated to the protein
+        self.exp_annotations = exp_annotations
 
     def __len__(self):
         return len(self.protein_ids)
@@ -143,7 +144,8 @@ class protein_loader(Dataset):
         protein_id = self.protein_ids[idx]
         sequence = self.sequences[idx]
         annotations = self.annotations[idx]
-        return {'protein_id': protein_id, 'sequence':sequence, 'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
+        exp_annotations = self.exp_annotations[idx]
+        return {'protein_id': protein_id, 'sequence':sequence, 'exp_labels':torch.as_tensor(annotations, dtype=torch.float32).clone().detach(),'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
     def __init__(self, input_dim, num_layers, num_heads, GO_data,out_channels):
@@ -337,7 +339,8 @@ def build_dataset(dataset):
     dataset=dataset[['proteins','sequences','propagate_annotation']]
     protein_name=list(dataset['proteins'].values)
     sequence=list(dataset['sequences'].values)
+    exp_labels=list(dataset['exp_annotation'].values)
     labels=list(dataset['propagate_annotation'].values)
-    dataset=zip(sequence,protein_name,labels)
+    dataset=zip(sequence,protein_name,exp_labels,labels)
     dataset=protein_loader(dataset)
     return dataset
