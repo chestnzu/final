@@ -11,7 +11,7 @@ from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 import esm
-from sklearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score
+from sklearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score,roc_curve,auc
 import numpy as np
 import obonet
 from dataset_generating.basics import Ontology
@@ -145,7 +145,7 @@ class protein_loader(Dataset):
         sequence = self.sequences[idx]
         annotations = self.annotations[idx]
         exp_annotations = self.exp_annotations[idx]
-        return {'protein_id': protein_id, 'sequence':sequence, 'exp_labels':torch.as_tensor(annotations, dtype=torch.float32).clone().detach(),'labels': torch.as_tensor(annotations, dtype=torch.float32).clone().detach()}
+        return {'protein_id': protein_id, 'sequence':sequence, 'exp_labels':torch.as_tensor(exp_annotations,dtype=torch.float32).clone().detach(),'labels': torch.as_tensor(annotations,dtype=torch.float32).clone().detach()}
     
 class Combine_Transformer(nn.Module):
     def __init__(self, input_dim, num_layers, num_heads, GO_data,out_channels):
@@ -202,16 +202,21 @@ class Combine_Transformer(nn.Module):
         
         # 6. 最终输出
         output = self.fc3(transformer_output).squeeze(-1)  # batch * GO_term_num
+        output == torch.sigmoid(output)
         return output
 
 
 
-def create_edge_index(onto_path,go_list):
+def create_edge_index(onto_path,go_list,aspect):
     enc=LabelEncoder()
-    onto = obonet.read_obo(onto_path)
+    onto = Ontology(onto_path, with_rels=True)
+    aspect_map={'bp': 'biological_process', 'mf': 'molecular_function', 'cc': 'cellular_component'}
+    namespace_terms=onto.get_namespace_terms(aspect_map[aspect])
+    go_list = list(set(go_list).intersection(namespace_terms))
     enc.fit(go_list)
     mapping={go_id: idx for idx, go_id in enumerate(enc.classes_)}
-    onto_1=nx.relabel_nodes(onto, mapping)
+    nx_onto=obonet.read_obo(onto_path)
+    onto_1=nx.relabel_nodes(nx_onto, mapping)
     go_list_digit=[idx for idx, _ in enumerate(enc.classes_)]
     edges=[(a,b) for a,b in onto_1.edges() if a in go_list_digit and b in go_list_digit]
     src,dst = zip(*edges)
@@ -247,22 +252,13 @@ def cal_f1(preds, golds):
     return f1_macro/total, f1_micro/total, f1_sample/total
 
 def cal_roc(preds, golds):
-    # 拼接所有 batch
-    _preds = np.concatenate([np.array(p.cpu()) for p in preds], axis=0)
-    _golds = np.concatenate([np.array(g.cpu()) for g in golds], axis=0)
-    valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
-    if not valid_labels:  # 没有合法标签
-        return 0
-    _preds = _preds[:, valid_labels]
-    _golds = _golds[:, valid_labels]
-    try:
-        #auc_macro = roc_auc_score(_golds, _preds, average="macro")
-        auc_micro = roc_auc_score(_golds, _preds, average="micro")
-    except ValueError:
-        # 如果所有标签都是0，roc_auc_score会报错
-        return 0
 
-    return auc_micro
+    _preds = np.array(preds).flatten()
+    _golds = np.array(golds).flatten()
+    fpr,tpr,_ = roc_curve(_golds, _preds)
+    roc_auc=auc(fpr,tpr)
+
+    return roc_auc
 
 def f_max(preds,golds):
     f_max=0
@@ -335,12 +331,26 @@ def evaluate_annotations(real_annots, pred_annots):
     return f, p, r, fps, fns
 
 
-def build_dataset(dataset):
-    dataset=dataset[['proteins','sequences','propagate_annotation']]
+def build_dataset(dataset,enc):
     protein_name=list(dataset['proteins'].values)
     sequence=list(dataset['sequences'].values)
-    exp_labels=list(dataset['exp_annotation'].values)
-    labels=list(dataset['propagate_annotation'].values)
+    num_terms = len(enc.classes_)  # one-hot 向量长度（GO term 总数）
+
+    exp_labels = []
+    labels = []
+    for go_list in dataset['exp_annotations']:
+        vec = np.zeros(num_terms, dtype=np.float32)
+        for go in go_list:
+            if go in enc.classes_:
+                vec[np.where(enc.classes_ == go)[0][0]] = 1.0
+        exp_labels.append(vec)
+
+    for go_list in dataset['propagate_annotation']:
+        vec = np.zeros(num_terms, dtype=np.float32)
+        for go in go_list:
+            if go in enc.classes_:
+                vec[np.where(enc.classes_ == go)[0][0]] = 1.0
+        labels.append(vec)
     dataset=zip(sequence,protein_name,exp_labels,labels)
     dataset=protein_loader(dataset)
     return dataset
