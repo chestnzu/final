@@ -19,7 +19,7 @@ ctime = datetime.now().strftime("%Y%m%d%H%M%S")
 goa_path="../data/goa_human.gaf"
 sequence_path='../data/esm2650M_swissprot_human.pt'
 embedding_path='../data/esm2650M_swissprot_human.pt'
-embedding_path_owl2vec = '../data/pre_trained_model/owl2vec_go_basic.embeddings'
+embedding_path_owl2vec = '../data/pre_trained_model/ontology.embeddings'
 onto_path='../data/go.obo'
 
 go_aspect=['bp', 'mf', 'cc']
@@ -29,12 +29,16 @@ print('sucessfully load the OWL2VEC embeddings')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 input_dim = 200
+output_dim = 32
 num_layers = 6
 num_heads = 8
 epoch_num=30
+hidden_dim=64
 e=math.e
-metrics_output_test = {}
-# protein_ids,protein_sequence,go_annotation_list,go_dict=load_filtered_protein_embeddings(goa_path,sequence_path)
+## load protein embeddings
+protein_labels,_,protein_embeddings=torch.load(embedding_path)
+
+
 ## go list number may not be the same as label_num, as we are creating the adjacency matrix and all ancestors are included,
 ## some terms that are not in the go_list may be included in the adjacency matrix as they are ancestors of the terms in the go_list
 for aspect in go_aspect:
@@ -57,30 +61,22 @@ for aspect in go_aspect:
     for i in range(label_num):
         node=enc.inverse_transform([i])[0]
         embedding_list.append(torch.tensor(owl2vec_model.wv.get_vector("http://purl.obolibrary.org/obo/"+node.replace(':','_'))))
-    embedding_vector=torch.stack(embedding_list)
-    embedding_vector=embedding_vector
+    embedding_vector=torch.stack(embedding_list).to(device)
     data=Data(x=embedding_vector,edge_index=edge_index).to(device)
 
     ## 4. create protein dataset
     train_dataset=build_dataset(train_data,enc)
     val_dataset=build_dataset(valid_data,enc)
     test_dataset=build_dataset(test_data,enc)
-    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-    val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    valid_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
     ## 5. model training
-    combine_model=Combine_Transformer(input_dim=input_dim,output_dim=label_num,num_layers=num_layers,num_heads=num_heads,GO_data=data).to(device)
-    loss_fn=nn.BCELoss() ##y 使用BCEWithLogitsLoss,不需要再使用 sigmoid
+    combine_model=Combine_Transformer(input_dim=input_dim,num_layers=num_layers,num_heads=num_heads,GO_data=data,output_dim=output_dim,hidden_dim=hidden_dim).to(device)
+    loss_fn=nn.BCELoss() 
     optimizer = torch.optim.AdamW(combine_model.parameters(), lr=5e-4)
     scheduler = MultiStepLR(optimizer, milestones=[5, 20], gamma=0.1)
-    if aspect not in metrics_output_test:
-        metrics_output_test[aspect] = {
-                'roc':[]
-            }
-        best_f1 = 0
-        best_model_weights = None
-        optimizer_model_weights = None
 
 
 ## -- training -- ##
@@ -91,7 +87,7 @@ for aspect in go_aspect:
         for i,batch in tqdm(enumerate(train_dataloader)):
             protein_ids = batch['protein_id']
             train_labels = batch['labels'].to(device)
-            protein_embeddings=load_protein_embeddings(protein_ids,embedding_path).to(device)
+            protein_embeddings=load_protein_embeddings(protein_ids,protein_embeddings,protein_labels).to(device)
             train_output=combine_model(protein_embeddings)
             loss=loss_fn(train_output,train_labels)
             optimizer.zero_grad()
@@ -103,21 +99,25 @@ for aspect in go_aspect:
                                                                                  (len(train_dataset) // 64)+1,
                                                                                  loss_mean / (i + 1)))    
 
- ### ---- vliadation set ---- ###
+ ### ---- validation set ---- ###
         combine_model.eval()
         labels, preds = [], []
+        valid_mean_loss=0
         with torch.no_grad():
-            for i,batch in tqdm(enumerate(val_dataloader)):
+
+            for i,batch in tqdm(enumerate(valid_dataloader)):
                 protein_ids = batch['protein_id']
-                valid_labels = batch['labels'].squeeze(0)
-                protein_embeddings=load_protein_embeddings(protein_ids,embedding_path).cuda()
+                valid_labels = batch['labels'].to(device)
+                protein_embeddings=load_protein_embeddings(protein_ids,protein_embeddings,protein_labels).to(device)
                 protein_embeddings = protein_embeddings.to(device)
-                valid_output=combine_model(protein_embeddings).squeeze(0)
+                valid_output=combine_model(protein_embeddings)
                 valid_loss=loss_fn(valid_output,valid_labels)
+                valid_mean_loss+=valid_loss.detach().item()
                 labels.append(valid_labels.cpu())
                 preds.append(valid_output.cpu())
+        valid_loss=valid_mean_loss/(i+1)
         roc=cal_roc(preds,labels)
-        metrics_output_test[aspect]['roc'].append(roc)   
+        print('AUC: {}'.format(roc))
         if valid_loss<best_loss:
             best_loss=valid_loss
             print('New record of loss on validation set: {:.4f}'.format(best_loss))
@@ -129,16 +129,17 @@ for aspect in go_aspect:
     combine_model.eval()
     labels, preds = [], []
     with torch.no_grad():
-        loss_mean=0
+        test_loss_mean=0
         for i,batch in tqdm(enumerate(test_dataloader)):
             protein_ids = batch['protein_id']
-            test_labels = batch['labels'].cuda()
-            protein_embeddings = load_protein_embeddings(protein_ids, embedding_path).to(device)
+            test_labels = batch['labels'].to(device)
+            protein_embeddings = load_protein_embeddings(protein_ids,protein_embeddings,protein_labels).to(device)
             test_output = combine_model(protein_embeddings)
             test_loss = loss_fn(test_output, test_labels)
+            test_loss_mean += test_loss.detach().item()
             labels.append(test_labels.cpu())
             preds.append(test_output.cpu())
         test_roc=cal_roc(preds,labels)
-        print('Loss: {:.4f},AUC: {}'.format((loss_mean / (i + 1)),test_roc))    
-    with open('../data/model_evaluation/{}/model.pf','w') as f:
-        f.write('Loss: {:.4f},AUC: {}\n'.format((loss_mean / (i + 1)),test_roc))
+        print('Loss: {:.4f},AUC: {}'.format((test_loss_mean / (i + 1)),test_roc))    
+    with open(f'../data/model_evaluation/{aspect}/model.txt', 'w') as f:
+        f.write(f'Loss: {test_loss_mean / (i + 1):.4f}, AUC: {test_roc}\n')
