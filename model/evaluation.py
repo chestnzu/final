@@ -48,24 +48,20 @@ def compute_metrics(test_df, go, terms_dict, terms, ont, eval_preds):
     go_set.remove(FUNC_DICT[ont]) ## remove the root term
     labels = test_df['prop_annotations'].values   ## get propagated annotations for each protein
     labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), labels)) ## filter out annotations not in the go set
-    spec_labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), spec_labels)) ## filter out annotations not in the go set
+    spec_labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), spec_labels)) ## filter out annotations not in the experiment go set
     fmax_spec_match = 0
-    for t in range(0, 101):
-        threshold = t / 100.0
+    for t in range(0, 101): ## from 0 to 1 with step size 0.01
+        threshold = t / 100.0 ## threshold for deciding whether a GO term is predicted to be annotated to a protein
         preds = [set() for _ in range(len(test_df))] ## initialize empty set for each protein
         for i in range(len(test_df)):
             annots = set()
             above_threshold = np.argwhere(eval_preds[i] >= threshold).flatten()
             for j in above_threshold:
-                annots.add(terms[j])
-        
-            if t == 0:
-                preds[i] = annots
-                continue
+                annots.add(terms[j])  
             preds[i] = annots
             
         # Filter classes
-        preds = list(map(lambda x: set(filter(lambda y: y in go_set, x)), preds))
+        preds = list(map(lambda x: set(filter(lambda y: y in go_set, x)), preds)) ## filter out predictions not in the go set
         fscore, prec, rec, s, ru, mi, fps, fns, avg_ic, wf = evaluate_annotations(go, labels, preds)
         spec_match = 0
         for i, row in enumerate(test_df.itertuples()):
