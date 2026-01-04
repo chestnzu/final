@@ -16,7 +16,7 @@ from basics import Ontology, FUNC_DICT, NAMESPACES, MOLECULAR_FUNCTION, BIOLOGIC
     '--data-file', '-df', default='../data/swissprot.pkl',
     help='Uniprot KB, generated with uni2pandas.py')
 @ck.option(
-    '--sim-file', '-sf', default='../data/swissprot_9606.sim',
+    '--sim-file', '-sf', default='../data/swissprot.sim',
     help='Sequence similarity generated with Diamond')
 @ck.option(
     '--species','-s', default='all',
@@ -25,7 +25,6 @@ from basics import Ontology, FUNC_DICT, NAMESPACES, MOLECULAR_FUNCTION, BIOLOGIC
 def main(go_file, data_file, sim_file, species):
     go = Ontology(go_file, with_rels=True)
     df = pd.read_pickle(data_file)
-    proteins = set(df['proteins'].values)
     if species != 'all':
         df = df[df['species'] == species]
         df = df.reset_index(drop=True)
@@ -35,11 +34,11 @@ def main(go_file, data_file, sim_file, species):
 
     for ont in ['cc', 'bp', 'mf']:
         cnt = Counter()
-        f1=generate_go_term_list(go_file,ont)
+        # f1=generate_go_term_list(go_file,ont)
         index = []
         for i, row in enumerate(df.itertuples()):
             ok = False
-            for term in row.propagate_annotation:
+            for term in row.prop_annotations:
                 if go.get_namespace(term) == NAMESPACES[ont]:
                     cnt[term] += 1
                     ok = True
@@ -49,6 +48,8 @@ def main(go_file, data_file, sim_file, species):
         del cnt[FUNC_DICT[ont]] # Remove top term
         tdf = df.iloc[index]
         terms = list(cnt.keys())
+        terms_df = pd.DataFrame({'gos': terms})
+        terms_df.to_pickle(f'../../data/dataset/{ont}/terms.pkl')
 
 
         print(f'Number of {ont} terms {len(terms)}')
@@ -58,7 +59,7 @@ def main(go_file, data_file, sim_file, species):
         # terms_df.to_pickle(f'data/{ont}/terms.pkl')
 
         # Split train/valid/test
-        proteins = tdf['proteins']
+        proteins = tdf['accessions'].str.split(';').str[0] # take the first accession if one protein have multiple accessions, according to uniprot documents. see#https://www.uniprot.org/help/difference_accession_entryname
         prot_set = set(proteins)
         prot_idx = {v:k for k, v in enumerate(proteins)}
         sim = {}
@@ -123,15 +124,18 @@ def main(go_file, data_file, sim_file, species):
         train_index = np.array(train_index)
         valid_index = np.array(valid_index)
         test_index = np.array(test_index)
-
-        train_df = tdf.iloc[train_index]
-        train_df.to_pickle(f'../data/dataset/{ont}/train_data.pkl')
-        
+        train_df = tdf.iloc[train_index]      
         valid_df = tdf.iloc[valid_index]
-        valid_df.to_pickle(f'../data/dataset/{ont}/valid_data.pkl')
         test_df = tdf.iloc[test_index]
-        test_df.to_pickle(f'../data/dataset/{ont}/test_data.pkl')
-        f1.to_pickle(f'../data/dataset/{ont}/terms.pkl')
+        if species != 'all':
+            train_df.to_pickle(f'../../data/dataset/{ont}/train_data_{species}.pkl')
+            valid_df.to_pickle(f'../../data/dataset/{ont}/valid_data_{species}.pkl')
+            test_df.to_pickle(f'../../data/dataset/{ont}/test_data_{species}.pkl')
+        else:
+            train_df.to_pickle(f'../../data/dataset/{ont}/train_data.pkl')
+            valid_df.to_pickle(f'../../data/dataset/{ont}/valid_data.pkl')
+            test_df.to_pickle(f'../../data/dataset/{ont}/test_data.pkl')
+        
         print(f'Train/Valid/Test proteins for {ont} {len(train_df)}/{len(valid_df)}/{len(test_df)}')
         print(f'terms {len(terms)}')
 

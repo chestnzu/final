@@ -1,213 +1,43 @@
-import torch
+import torch,obonet
 import torch.nn as nn
 import torch.nn.functional as F
-import torch
-import torch.nn.functional as F
-from torch_geometric.nn import TopKPooling,SAGEConv
 from torch_geometric.utils import to_dense_adj
 import networkx as nx
-import obonet,math
-from owlready2 import get_ontology
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
-import esm
-from sklearn.metrics import f1_score,roc_auc_score,precision_recall_curve,average_precision_score,roc_curve,auc
 import numpy as np
-import obonet
-from dataset_generating.basics import Ontology
-
-
-class EmbeddingTransform(nn.Module):
-    def __init__(self, input_dim=1280, output_dim=200):
-        super().__init__()       
-        self.linear1 = nn.Linear(input_dim, output_dim)
-        self.relu = nn.ReLU()
-        
-    def forward(self, x):
-        x = self.linear1(x)
-        x = self.relu(x)
-        return x
-
-class GNN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(GNN, self).__init__()
-        self.conv1 = SAGEConv(input_dim, hidden_dim)
-        self.conv2 = SAGEConv(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(p=0.2)
-        self.norm = nn.LayerNorm(output_dim)
-
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        self.norm(x)
-        self.dropout(x)
-        return x
-
-
-class Attention_layer(nn.Module):
-    def  __init__(self, in_channels, hid_channels, out_channels):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(in_channels, hid_channels),
-            nn.ReLU(),
-            nn.Linear(hid_channels, out_channels),
-        )
-    def forward(self, x):
-        ### 输入：batch * GO_term_num * 200
-        ### 输出：batch * GO_term_num * 200
-        if x.dtype == torch.float32:
-            x = x.float()
-        Z = self.model(x) ## batch * GO_term_num * 200
-        # score = torch.bmm(Z, Z.transpose(1, 2))  # batch * GO_term_num * GO_term_num
-        score = torch.sparse.mm(Z, Z.t())  # batch * GO_term_num * GO_term_num
-        W = F.softmax(score, dim=1).to(torch.float32) # 归一化为0-1权重
-        return W
-
-class ProteinGoCrossAttention(nn.Module):
-    def __init__(self, protein_dim, go_dim, num_go, hidden_dim):
-        super().__init__()
-        self.query = nn.Parameter(torch.randn(num_go, hidden_dim))  # learnable GO queries
-        self.key = nn.Linear(protein_dim, hidden_dim)
-        self.value = nn.Linear(protein_dim, hidden_dim)
-        self.out = nn.Linear(hidden_dim, go_dim)
-        self.go_dim = go_dim
-
-    def forward(self, protein_emb):
-        # protein_emb: (batch, protein_dim)
-        K = self.key(protein_emb).unsqueeze(1)   # (batch, 1, hidden_dim)
-        V = self.value(protein_emb).unsqueeze(1) # (batch, 1, hidden_dim)
-        Q = self.query.unsqueeze(0).expand(protein_emb.size(0), -1, -1)  # (batch, num_go, hidden_dim)
-        
-        attention = torch.softmax(torch.matmul(Q, K.transpose(1, 2)) / (self.go_dim ** 0.5), dim=-1)
-        out = torch.matmul(attention, V)  # (batch, num_go, hidden_dim)
-        output = self.out(out)               # (batch, num_go, go_dim)
-        return output
-
-class GoAttentionPooling(nn.Module):
-    def __init__(self, num_go_reduced, go_dim):
-        super().__init__()
-        self.query = nn.Parameter(torch.randn(num_go_reduced, go_dim))
-        self.key_proj = nn.Linear(go_dim, go_dim)
-        self.value_proj = nn.Linear(go_dim, go_dim)
-        self.go_dim = go_dim  # 保存为实例属性
-        
-    def forward(self, go_matrix):
-        # go_matrix: (batch, num_go_full, go_dim)
-        K = self.key_proj(go_matrix)       # (batch, num_go_full, go_dim)
-        V = self.value_proj(go_matrix)     # (batch, num_go_full, go_dim)
-        Q = self.query.unsqueeze(0).expand(go_matrix.size(0), -1, -1)  # (batch, num_go_reduced, go_dim)
-        
-        attention = torch.softmax(torch.matmul(Q, K.transpose(1, 2)) / (self.go_dim ** 0.5), dim=-1)
-        out = torch.matmul(attention, V)   # (batch, num_go_reduced, go_dim)
-        return out
-
-class cheb_conv_K(nn.Module):
-    def __init__(self, K, in_channels, out_channels, device):
-        super(cheb_conv_K, self).__init__()
-        self.K = K
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.DEVICE = device
-        self.Theta = nn.Parameter(torch.FloatTensor(K, in_channels, out_channels).to(self.DEVICE)).to(torch.float32)
-
-    def forward(self, x, adj):
-        '''
-        Chebyshev graph convolution operation
-        '''
-        graph_signal = x  # (class, F_in)
-        T_k_with_at = adj  # (class, class)
-        output = torch.zeros_like(graph_signal).to(self.DEVICE)  #  class, F_out)
-        for k in range(self.K):
-            theta_k = self.Theta[k]  # (in_channels, out_channels)
-            rhs = torch.sparse.mm(T_k_with_at, graph_signal)  # (class, F_in) * (class, class) -> (class, F_in)
-            output += torch.matmul(rhs, theta_k)  # (class, F_in) * (F_in, F_out) -> (class, F_out)
-
-        return F.relu(output)  # (class, F_out)
+from evaluation import *
+from dataset_generating.basics import *
+from sklearn.metrics import roc_curve, auc
 
 class protein_loader(Dataset):
-    def __init__(self, dataset):
-        sequences,protein_ids,exp_annotations,annotations= zip(*dataset)
-        self.sequences = sequences
-        self.protein_ids = protein_ids
-        self.annotations = annotations ## one-hot vector, encoding which GO terms are annotated to the protein
-        self.exp_annotations = exp_annotations
+    def __init__(self,labels,esm2_embeddings):
+#        self.protein_ids = protein_id
+        self.esm2_embeddings = esm2_embeddings
+        self.annotations = labels
 
     def __len__(self):
-        return len(self.protein_ids)
+        return len(self.esm2_embeddings)
     
     def __getitem__(self, idx):
-        protein_id = self.protein_ids[idx]
-        sequence = self.sequences[idx]
+#        protein_id = self.protein_ids[idx]
         annotations = self.annotations[idx]
-        exp_annotations = self.exp_annotations[idx]
-        return {'protein_id': protein_id, 'sequence':sequence, 'exp_labels':torch.as_tensor(exp_annotations,dtype=torch.float32).clone().detach(),'labels': torch.as_tensor(annotations,dtype=torch.float32).clone().detach()}
+        esm2_embedding = self.esm2_embeddings[idx]
+        return { 'labels': torch.as_tensor(annotations,dtype=torch.float32).clone().detach(),'esm2_embeddings': esm2_embedding}
     
-class Combine_Transformer(nn.Module):
-    def __init__(self, input_dim, num_layers, num_heads, GO_data,output_dim,hidden_dim):
-        super(Combine_Transformer, self).__init__()
-        self.heads = num_heads
-        self.go_data = GO_data
-        self.fc1 = EmbeddingTransform(output_dim=input_dim)
-        self.fc2 = nn.Linear(input_dim, output_dim)
-        self.fc3 = nn.Linear(output_dim, 1)
-        self.fc4 = nn.Linear(self.go_data.x.shape[0]//8, self.go_data.x.shape[0])
-        self.GCN = cheb_conv_K(K=3, in_channels=input_dim, out_channels=input_dim, device='cuda')
-        self.convert_go_feature = ProteinGoCrossAttention(protein_dim=input_dim, num_go=GO_data.x.shape[0]//8, go_dim=output_dim,hidden_dim=hidden_dim) #protein_dim, go_dim, num_go, hidden_dim
-        self.compressGO = GoAttentionPooling(num_go_reduced=GO_data.x.shape[0]//8, go_dim=output_dim)
-        self.training = True
-        
-        # 优化的norm配置
-        self.norm1 = nn.BatchNorm1d(input_dim).to(torch.float32)  # GCN后：图数据用BatchNorm
-        self.norm2 = nn.LayerNorm(output_dim).to(torch.float32)    # 融合特征后：稳定注意力输入
-        self.norm3 = nn.LayerNorm(output_dim).to(torch.float32)
-        # norm3 可以省略，因为TransformerEncoder内部有LayerNorm
-        self.functionAttention = Attention_layer(in_channels=input_dim, hid_channels=256, out_channels=input_dim)
-        self.multihead_attn = nn.MultiheadAttention(embed_dim=output_dim, num_heads=num_heads, 
-                                                dropout=0.1, batch_first=True)
-        self.transformer_layer = nn.TransformerEncoderLayer(d_model=output_dim, nhead=num_heads, 
-                                                           dropout=0.1, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)     
-        self.dropout = nn.Dropout(0.1)
-        
-   
-    def forward(self, protein_vectors):
-        ## 1. 蛋白质特征变换
-        ## 输入特征为 batch * 1280, 输出为 batch * 200
-        protein_vectors = self.fc1(protein_vectors)
-        protein_vectors_norm = self.norm1(protein_vectors)
-        ## 2. 将蛋白质特征转换为GO维度的特征
-        protein_go_features = self.convert_go_feature(protein_vectors_norm)  # batch * GO_term_num * 200
-        ## 3. GO特征图卷积 + BatchNorm + Dropout
-        # go_features = self.go_data.x.unsqueeze(0).expand(protein_vectors.shape[0],-1,-1)  # batch * GO_term_num * 200
-        go_features = self.go_data.x
-        go_adj = to_dense_adj(self.go_data.edge_index)[0]
-        attention_adj = self.functionAttention(go_features)  ## batch * GO_term_num * GO_term_num        
-        go_adj = go_adj + attention_adj ## batch * GO_term_num * GO_term_num
-        go_output = self.GCN(go_features,go_adj) +go_features ## batch * GO_term_num * 200
-        go_output = go_output.unsqueeze(0).expand(protein_vectors.shape[0],-1,-1) ## batch * GO_term_num * 200
-        go_output = self.fc2(go_output)  # batch * GO_term_num * output_dim
-        go_output = self.norm2(go_output)
-        go_features = F.dropout(go_output, p=0.1, training=self.training) # batch * GO_term_num * output_dim
-        go_features = self.compressGO(go_features)  # batch * (GO_term_num//8) * output_dim
-
-        ## 4. 特征融合
-        combine_features = protein_go_features + go_features  # batch * (GO_term_num//8) * output_dim
-        # combine_features = self.fc2(combine_features)
-        # combine_features = self.dropout(combine_features)
-        combine_features = self.norm3(combine_features)
-        attn_output, _ = self.multihead_attn(combine_features, combine_features, combine_features)
-        
-        # 5. Transformer编码器（内部已有LayerNorm和残差连接）
-        transformer_output = self.transformer_encoder(attn_output) ## batch * (GO_term_num//8) * output_dim
-        
-        # 6. 最终输出
-        output = self.fc3(transformer_output).squeeze(-1)  # batch * GO_term_num//8
-        output = self.fc4(output)  # batch * GO_term_num
-        output == torch.sigmoid(output) # batch * GO_term_num
-        return output
-
+def load_data(aspect,data_root,species=None):
+    if species:
+        train_data = pd.read_pickle(data_root + '/{}/train_data_{}.pkl'.format(aspect,species))
+        valid_data = pd.read_pickle(data_root + '/{}/valid_data_{}.pkl'.format(aspect,species))
+        test_data = pd.read_pickle(data_root + '/{}/test_data_{}.pkl'.format(aspect,species))
+    else:
+        train_data = pd.read_pickle(data_root + '/{}/train_data.pkl'.format(aspect))
+        valid_data = pd.read_pickle(data_root + '/{}/valid_data.pkl'.format(aspect))
+        test_data = pd.read_pickle(data_root + '/{}/test_data.pkl'.format(aspect))
+    terms = pd.read_pickle(data_root + '/{}/terms.pkl'.format(aspect))['gos'].values.flatten() ## np.ndarray      
+    terms_dict = {v: i for i, v in enumerate(terms)} ## (go_id:index)
+    termidx={idx:term for term,idx in terms_dict.items()}  
+    return train_data,valid_data,test_data,terms,terms_dict,termidx
 
 
 def create_edge_index(onto_path,go_list,aspect):
@@ -226,84 +56,217 @@ def create_edge_index(onto_path,go_list,aspect):
     edge_index=torch.tensor([src,dst],dtype=torch.long)
     return edge_index, enc
 
-
-def load_protein_embeddings(protein_ids, embedding,label):
+def load_protein_embeddings(protein_ids,embedding,label):
     sequence_representations = []
     for pid in protein_ids:
         if pid in label:
             idx = label.index(pid)
-            sequence_representations.append(embedding[idx])
+            sequence_representations.append(embedding[idx].cpu())
         else:
-            sequence_representations.append(torch.zeros(1280))
+            sequence_representations.append(torch.zeros(2560))
     embedding_batch = torch.stack(sequence_representations)
     return embedding_batch
 
-def cal_f1(preds, golds):
-    f1_macro = f1_micro = f1_sample = 0
-    total = len(preds)
 
-    for i in range(total):
-        _preds = np.array(preds[i].cpu())
-        _golds = np.array(golds[i].cpu())
-        _preds[_preds >= 0.5] = 1
-        _preds[_preds < 0.5] = 0
+def build_dataset(dataset, term_dict,protein_embeddings, protein_labels,exp_only=False,fdl=False):
+    protein_id = list(dataset['proteins'].values)
+    esm2_embeddings=load_protein_embeddings(protein_id, protein_embeddings, protein_labels)
+    labels = torch.zeros((len(dataset), len(term_dict)), dtype=torch.float32)
+    # ----------- 处理 annotations ----------
+    for i,row in enumerate(dataset.itertuples()):
+        if exp_only:
+            for go in row.exp_annotations:
+                if go in term_dict:
+                    gid=term_dict[go]
+                    labels[i,gid]=1
+        else:
+            for go in row.prop_annotations:
+            #for go in row.propagate_annotation:
+                if go in term_dict:
+                    gid=term_dict[go]
+                    labels[i,gid]=1
+    if fdl == True:
+        return esm2_embeddings,labels
+    else:
+        dataset = protein_loader(labels,esm2_embeddings.cpu())
+        return dataset
 
-        f1_macro += f1_score(_golds, _preds, average='macro', zero_division=1)
-        f1_micro += f1_score(_golds, _preds, average='micro', zero_division=1)
-        f1_sample += f1_score(_golds, _preds, average='samples', zero_division=1)
 
-    return f1_macro/total, f1_micro/total, f1_sample/total
+def protein_go_contrastive_loss(protein_vecs, go_vecs, temperature=0.1):
+    """
+    蛋白质→GO单向对比损失
+    - 每个蛋白质与一个GO术语正样本配对
+    - 其他GO术语作为负样本
+    """
+    protein_vecs = F.normalize(protein_vecs, dim=1)
+    go_vecs = F.normalize(go_vecs, dim=1)
+    
+    # 蛋白质查询GO空间
+    logits = protein_vecs @ go_vecs.T  # [batch_size, batch_size]
+    labels = torch.arange(logits.size(0)).to(logits.device)
+    
+    loss = F.cross_entropy(logits / temperature, labels)
+    return loss
 
-def cal_roc(preds, golds):
 
-    _preds = np.array(preds).flatten()
-    _golds = np.array(golds).flatten()
-    fpr,tpr,_ = roc_curve(_golds, _preds)
-    roc_auc=auc(fpr,tpr)
+def load_normal_forms(go_file, terms_dict):
+    """
+    Parses and loads normalized (using Normalize.groovy script)
+    ontology axioms file
+    Args:
+        go_file (string): Path to a file with normal forms
+        terms_dict (dict): Dictionary with GO classes that are predicted
+    Returns:
+        
+    """
+    nf1 = []
+    nf2 = []
+    nf3 = []
+    nf4 = []
+    relations = {}
+    zclasses = {}
+    
+    def get_index(go_id):
+        if go_id in terms_dict:
+            index = terms_dict[go_id]
+        elif go_id in zclasses:
+            index = zclasses[go_id]
+        else:
+            zclasses[go_id] = len(terms_dict) + len(zclasses)
+            index = zclasses[go_id]
+        return index
 
+    def get_rel_index(rel_id):
+        if rel_id not in relations:
+            relations[rel_id] = len(relations)
+        return relations[rel_id]
+                
+    with open(go_file) as f:
+        for line in f:
+            line = line.strip().replace('_', ':')
+            if line.find('SubClassOf') == -1:
+                continue
+            left, right = line.split(' SubClassOf ')
+            # C SubClassOf D
+            if len(left) == 10 and len(right) == 10:
+                go1, go2 = left, right
+                nf1.append((get_index(go1), get_index(go2)))
+            elif left.find('and') != -1: # C and D SubClassOf E
+                go1, go2 = left.split(' and ')
+                go3 = right
+                nf2.append((get_index(go1), get_index(go2), get_index(go3)))
+            elif left.find('some') != -1:  # R some C SubClassOf D
+                rel, go1 = left.split(' some ')
+                go2 = right
+                nf3.append((get_rel_index(rel), get_index(go1), get_index(go2)))
+            elif right.find('some') != -1: # C SubClassOf R some D
+                go1 = left
+                rel, go2 = right.split(' some ')
+                nf4.append((get_index(go1), get_rel_index(rel), get_index(go2)))
+    return nf1, nf2, nf3, nf4, relations, zclasses
+
+def compute_roc(labels, preds):
+    # Compute ROC curve and ROC area for each class
+    fpr, tpr, _ = roc_curve(labels.flatten(), preds.flatten())
+    roc_auc = auc(fpr, tpr)
     return roc_auc
 
-def f_max(preds,golds):
-    f_max=0
-    for i in range(len(preds)):
-        _preds = np.array(preds[i].cpu())
-        _golds = np.array(golds[i].cpu())
-        valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
-        if not valid_labels:  # 没有合法标签
-            return 0
-        _preds = _preds[:, valid_labels]
-        _golds = _golds[:, valid_labels]
-        precision, recall, thresholds = precision_recall_curve(_golds.ravel(),_preds.ravel())
-        f_scores = 2 * precision * recall / (precision + recall + 1e-8)
-        if f_scores.max() > f_max:
-            f_max = f_scores.max()
-            best_threshold = thresholds[f_scores.argmax()]
-    return f_max
+def compute_metrics(test_df, go, terms_dict, terms, ont, eval_preds):
+    ## test_df: dataframe with columns 'proteins', 'accessions', 'sequences', 'annotations', 'species','exp_annotations', 'propagate_annotation'
+    ## eval_preds: numpy array of shape (number of proteins, number of GO terms),
+    ## go: Ontology object
+    ## term_dict: {go_id: column_index}
+    ## terms: list of go_ids corresponding to columns in eval_preds
+    ## ont: ontology aspect, one of 'mf','bp','cc'
 
-def cal_aupr(preds, golds):
-    _preds = np.concatenate([np.array(p.cpu()) for p in preds], axis=0)
-    _golds = np.concatenate([np.array(g.cpu()) for g in golds], axis=0)
+    labels = np.zeros((len(test_df), len(terms_dict)), dtype=np.float32) ## len(test_df) == number of proteins
+                                                                         ## len(terms_dict) == number of GO terms
+                                                                         
+    for i, row in enumerate(test_df.itertuples()):
+        for go_id in row.prop_annotations:
+            if go_id in terms_dict:
+                labels[i, terms_dict[go_id]] = 1   ## for each protein, mark the presence of propagated GO terms
+    
+    total_n = 0
+    total_sum = 0
+    for go_id, i in terms_dict.items(): ## iterate over all GO columns
+        pos_n = np.sum(labels[:, i]) ## number of positive samples for this GO term
+        if pos_n > 0 and pos_n < len(test_df):
+            total_n += 1
+            roc_auc  = compute_roc(labels[:, i], eval_preds[:, i])
+            total_sum += roc_auc
 
-    valid_labels = [j for j in range(_golds.shape[1]) if len(np.unique(_golds[:, j])) > 1]
-    if not valid_labels:
-        return 0
-    _preds = _preds[:, valid_labels]
-    _golds = _golds[:, valid_labels]
-    aupr_micro = average_precision_score(_golds, _preds, average="micro")
+    avg_auc = total_sum / total_n
+    
+    print('Computing Fmax')
+    fmax = 0.0
+    tmax = 0.0
+    wtmax = 0.0
+    wfmax = 0.0
+    avgic = 0.0
+    precisions = []
+    recalls = []
+    smin = 1000000.0
+    go_set = go.get_namespace_terms(NAMESPACES[ont]) ## get all GO terms in the specific ontology
+    go_set.remove(FUNC_DICT[ont]) ## remove the root term
+    labels = test_df['prop_annotations'].values   ## get propagated annotations for each protein
+    labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), labels)) ## filter out annotations not in the go set
+    for t in range(0, 101): ## from 0 to 1 with step size 0.01
+        threshold = t / 100.0 ## threshold for deciding whether a GO term is predicted to be annotated to a protein
+        preds = [set() for _ in range(len(test_df))] ## initialize empty set for each protein
+        for i in range(len(test_df)):
+            annots = set()
+            above_threshold = np.argwhere(eval_preds[i] >= threshold).flatten()
+            for j in above_threshold:
+                annots.add(terms[j])             
+            if t==0:
+                preds[i] = annots
+                continue
+            preds[i] = annots
+        preds = list(map(lambda x: set(filter(lambda y: y in go_set, x)), preds))   
 
-    return aupr_micro
+ ## filter out predictions not in the go set
+        fscore, prec, rec, s, ru, mi, fps, fns, avg_ic, wf  = evaluate_annotations(go, labels, preds)
+        precisions.append(prec)
+        recalls.append(rec)
+        if fmax < fscore:
+            fmax = fscore
+            tmax = threshold
+            avgic = avg_ic
+        if wfmax < wf:
+            wfmax = wf
+            wtmax = threshold
+        if smin > s:
+            smin = s
+    precisions = np.array(precisions)
+    recalls = np.array(recalls)
+    sorted_index = np.argsort(recalls)
+    recalls = recalls[sorted_index]
+    precisions = precisions[sorted_index]
+    aupr = np.trapz(precisions, recalls)
+    
 
-def evaluate_annotations(real_annots, pred_annots):
+    return fmax, smin, tmax, wfmax, wtmax, avg_auc, aupr, avgic    # fmax, smin, tmax, wfmax, wtmax, avg_auc, aupr, avgic
+
+
+
+def evaluate_annotations(go, real_annots, pred_annots):
     """
     Computes Fmax, Smin, WFmax and Average IC
     Args:
-       real_annots (set): Set of real GO classes
+       go (utils.Ontology): Ontology class instance with go.obo
+       real_annots (set): Set of real GO classes ## list of lists, each set for a protein, len(list) = number of GO terrms
        pred_annots (set): Set of predicted GO classes
     """
     total = 0
     p = 0.0
     r = 0.0
+    wp = 0.0
+    wr = 0.0
     p_total= 0
+    ru = 0.0
+    mi = 0.0
+    avg_ic = 0.0
     fps = []
     fns = []
     for i in range(len(real_annots)):
@@ -312,48 +275,107 @@ def evaluate_annotations(real_annots, pred_annots):
         tp = set(real_annots[i]).intersection(set(pred_annots[i]))
         fp = set(pred_annots[i]) - tp
         fn = set(real_annots[i]) - tp
+        tpic = 0.0
+        for go_id in tp:
+            tpic += go.get_norm_ic(go_id)
+            avg_ic += go.get_ic(go_id)
+        fpic = 0.0
+        for go_id in fp:
+            fpic += go.get_norm_ic(go_id)
+            mi += go.get_ic(go_id)
+        fnic = 0.0
+        for go_id in fn:
+            fnic += go.get_norm_ic(go_id)
+            ru += go.get_ic(go_id)
         fps.append(fp)
         fns.append(fn)
         tpn = len(tp)
         fpn = len(fp)
         fnn = len(fn)
         total += 1
-        recall = tpn / (1.0 * (tpn + fnn)) if (tpn + fnn) > 0 else 0
+        recall = tpn / (1.0 * (tpn + fnn))
         r += recall
+        wrecall = tpic / (tpic + fnic)
+        wr += wrecall
         if len(pred_annots[i]) > 0:
             p_total += 1
-            precision = tpn / (1.0 * (tpn + fpn)) if (tpn + fpn) > 0 else 0
+            precision = tpn / (1.0 * (tpn + fpn))
             p += precision
-
-    r /= total if total > 0 else 0
+            if tpic + fpic > 0:
+                wp += tpic / (tpic + fpic)
+    avg_ic = (avg_ic + mi) / total
+    ru /= total
+    mi /= total
+    r /= total
+    wr /= total
     if p_total > 0:
         p /= p_total
+        wp /= p_total
     f = 0.0
+    wf = 0.0
     if p + r > 0:
         f = 2 * p * r / (p + r)
-    return f, p, r, fps, fns
+        wf = 2 * wp * wr / (wp + wr)
+    s = math.sqrt(ru * ru + mi * mi)
+    return f, p, r, s, ru, mi, fps, fns, avg_ic, wf
 
 
-def build_dataset(dataset,enc):
-    protein_name=list(dataset['proteins'].values)
-    sequence=list(dataset['sequences'].values)
-    num_terms = len(enc.classes_)  # one-hot 向量长度（GO term 总数）
 
-    exp_labels = []
-    labels = []
-    for go_list in dataset['exp_annotations']:
-        vec = np.zeros(num_terms, dtype=np.float32)
-        for go in go_list:
-            if go in enc.classes_:
-                vec[np.where(enc.classes_ == go)[0][0]] = 1.0
-        exp_labels.append(vec)
+def load_deepgo2_data(data_root,aspect): ## only works for deepgo2 original data, because their df contains esm2 embeddings
+    train_data = pd.read_pickle(data_root + '/{}/train_data.pkl'.format(aspect))
+    valid_data = pd.read_pickle(data_root + '/{}/valid_data.pkl'.format(aspect))
+    test_data = pd.read_pickle(data_root + '/{}/test_data.pkl'.format(aspect))
 
-    for go_list in dataset['propagate_annotation']:
-        vec = np.zeros(num_terms, dtype=np.float32)
-        for go in go_list:
-            if go in enc.classes_:
-                vec[np.where(enc.classes_ == go)[0][0]] = 1.0
-        labels.append(vec)
-    dataset=zip(sequence,protein_name,exp_labels,labels)
-    dataset=protein_loader(dataset)
-    return dataset
+    all_data=pd.concat([train_data,valid_data,test_data])
+    protein_labels=all_data['proteins'].tolist()
+    protein_embeddings=torch.from_numpy(np.stack(all_data['esm2'].values))
+    return protein_labels, protein_embeddings
+
+
+import torch
+
+class FastTensorDataLoader:
+    """
+    A DataLoader-like object for a set of tensors that can be much faster than
+    TensorDataset + DataLoader because dataloader grabs individual indices of
+    the dataset and calls cat (slow).
+    Source: https://discuss.pytorch.org/t/dataloader-much-slower-than-manual-batching/27014/6
+    """
+    def __init__(self, *tensors, batch_size=32, shuffle=False):
+        """
+        Initialize a FastTensorDataLoader.
+        :param *tensors: tensors to store. Must have the same length @ dim 0.
+        :param batch_size: batch size to load.
+        :param shuffle: if True, shuffle the data *in-place* whenever an
+            iterator is created out of this object.
+        :returns: A FastTensorDataLoader.
+        """
+        assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)
+        self.tensors = tensors
+
+        self.dataset_len = self.tensors[0].shape[0]
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+        # Calculate # batches
+        n_batches, remainder = divmod(self.dataset_len, self.batch_size)
+        if remainder > 0:
+            n_batches += 1
+        self.n_batches = n_batches
+    def __iter__(self):
+        if self.shuffle:
+            r = torch.randperm(self.dataset_len)
+            self.tensors = [t[r] for t in self.tensors]
+        self.i = 0
+        return self
+
+    def __next__(self):
+        if self.i >= self.dataset_len:
+            raise StopIteration
+        batch = tuple(t[self.i:self.i+self.batch_size] for t in self.tensors)
+        self.i += self.batch_size
+        return batch
+
+    def __len__(self):
+        return self.n_batches
+    

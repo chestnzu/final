@@ -1,0 +1,27 @@
+{
+  "profiles": {
+    "default": {
+      "fast_debug": false,
+      "aspects": ["mf","bp","cc"],
+      "epoch_num": 5,
+      "train_limit": null,
+      "val_limit": null,
+      "test_limit": null,
+      "train_bs": 37,
+      "eval_bs": 37,
+      "hidden_dim":32,
+      "num_layers":2,
+      "num_heads":4
+    },
+    "fast_debug": {
+      "fast_debug": true,
+      "aspects": ["mf"],
+      "epoch_num": 10,
+      "train_limit": 20,
+      "val_limit": 10,
+      "test_limit": 10,
+      "train_bs": 8,
+      "eval_bs": 8
+    }
+  }
+}

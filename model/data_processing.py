@@ -1,7 +1,6 @@
 import pandas as pd
 from Bio import SeqIO
 import torch
-from defined_functions import EmbeddingTransform
 import gensim
 from owlready2 import *
 

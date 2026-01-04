@@ -24,8 +24,11 @@ from Bio.SeqRecord import SeqRecord
 @ck.option(
     '--device', '-d', default='cpu',
     help='Device for ESM2 model')
-def main(swissprot_file, out_file, device):
-    go = Ontology('../data/go.obo', with_rels=True)
+@ck.option(
+    '--go-file', '-gf', default='../data/go.obo',
+)
+def main(swissprot_file, out_file, go_file,device):
+    go = Ontology(go_file, with_rels=True)
     proteins, accessions, sequences, annotations, _, species, _, _ = load_data(swissprot_file)
     df = pd.DataFrame({
         'proteins': proteins,
@@ -62,7 +65,7 @@ def main(swissprot_file, out_file, device):
             annot_set |= go.get_ancestors(go_id)
         annots = list(annot_set)
         propagate_annotation.append(annots)
-    df['propagate_annotation'] = propagate_annotation
+    df['prop_annotations'] = propagate_annotation
 
 
     fasta_file = os.path.splitext(swissprot_file)[0] + '.fa'

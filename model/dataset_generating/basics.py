@@ -64,6 +64,14 @@ def propagate_annots(preds, go, terms_dict):
             preds[terms_dict[go_id]] = score
     return preds
 
+def propagate_annots_set(pred_set, go):
+    """
+    pred_set: set of GO terms (strings)
+    """
+    propagated = set(pred_set)
+    for go_id in pred_set:
+        propagated |= go.get_ancestors(go_id)
+    return propagated
 
 class Ontology(object):
 
@@ -80,6 +88,14 @@ class Ontology(object):
         if self.has_term(term_id):
             return self.ont[term_id]
         return None
+    
+    def generate_term_dict(self,aspect):
+        term_list=[]
+        for go_id in self.ont:
+            if self.ont[go_id]['namespace']==NAMESPACES[aspect] and self.ont[go_id]['is_obsolete']==False:
+                term_list.append(go_id)
+        term_dict = {v: i for i, v in enumerate(term_list)}
+        return term_dict
 
     def calculate_ic(self, annots):
         cnt = Counter()
@@ -151,8 +167,8 @@ class Ontology(object):
             if obj is not None:
                 ont[obj['id']] = obj
         for term_id in list(ont.keys()):
-            for t_id in ont[term_id]['alt_ids']:
-                ont[t_id] = ont[term_id]
+            # for t_id in ont[term_id]['alt_ids']:
+            #     ont[t_id] = ont[term_id]
             if ont[term_id]['is_obsolete']:
                 del ont[term_id]
         for term_id, val in ont.items():
