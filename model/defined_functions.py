@@ -67,6 +67,22 @@ def load_protein_embeddings(protein_ids,embedding,label):
     embedding_batch = torch.stack(sequence_representations)
     return embedding_batch
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance
+    Helps improve AUPR by focusing on hard examples
+    """
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)  # prevents nans when probability 0
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        return focal_loss.mean()
+
 
 def build_dataset(dataset, term_dict,protein_embeddings, protein_labels,exp_only=False,fdl=False):
     protein_id = list(dataset['proteins'].values)
@@ -330,9 +346,6 @@ def load_deepgo2_data(data_root,aspect): ## only works for deepgo2 original data
     protein_labels=all_data['proteins'].tolist()
     protein_embeddings=torch.from_numpy(np.stack(all_data['esm2'].values))
     return protein_labels, protein_embeddings
-
-
-import torch
 
 class FastTensorDataLoader:
     """

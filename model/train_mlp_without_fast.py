@@ -93,6 +93,9 @@ def main(aspect,deepgo2,fastdataloader,embedding_path):
 
     ### start training ###
     best_loss=100000.00
+    patience = 5
+    best_AUC = 0
+    counter = 0
     for epoch in range(epoch_num):
         combine_model.train()
         train_loss = 0 ## DeepGO
@@ -157,7 +160,7 @@ def main(aspect,deepgo2,fastdataloader,embedding_path):
     with Pool(32) as p:
         preds=p.map(partial(propagate_annots,go=go,terms_dict=terms_dict),preds)
     test_df['preds'] = preds
-    test_df.to_pickle(f'{data_root}/{aspect}/predictions_esm2_context.pkl')
+    test_df.to_pickle(f'{data_root}/{aspect}/predictions_esm2_context_MLP.pkl')
 
 if __name__ == '__main__':
     main()

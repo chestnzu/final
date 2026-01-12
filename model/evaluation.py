@@ -22,7 +22,7 @@ from defined_functions import *
 def main(data_root, onto, model_name):
     # train_data_file = f'{data_root}/{onto}/train_data_yi.pkl'
     # valid_data_file = f'{data_root}/{onto}/valid_data_yi.pkl'    
-    test_data_file = f'{data_root}/{onto}/predictions_esm2_context.pkl'
+    test_data_file = f'{data_root}/{onto}/predictions_esm2_context_{model_name}.pkl'
     train_data_file = f'{data_root}/{onto}/train_data.pkl'
     valid_data_file = f'{data_root}/{onto}/valid_data.pkl'    
 #    test_data_file = f'{data_root}/{onto}/test_data.pkl'

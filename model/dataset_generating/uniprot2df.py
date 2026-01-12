@@ -16,7 +16,7 @@ from Bio.SeqRecord import SeqRecord
 
 @ck.command()
 @ck.option(
-    '--swissprot-file', '-sf', default='data/uniprot_sprot_2022_04.dat.gz',
+    '--swissprot-file', '-sf', default='data/uniprot_sprot_2021_04.dat.gz',
     help='UniProt/SwissProt knowledgebase file in text format (archived)')
 @ck.option(
     '--out-file', '-o', default='data/swissprot_exp_2022_04.pkl',
