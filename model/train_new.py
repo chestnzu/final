@@ -100,7 +100,6 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
     valid_labels = valid_labels.detach().cpu().numpy()
     test_labels = test_labels.detach().cpu().numpy()
     optimizer = torch.optim.Adam(combine_model.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[12], gamma=0.1)
     ### start training ###
     best_loss=100000.00
     patience_counter = 0
@@ -121,7 +120,6 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
                 optimizer.step()
                 train_loss += loss.detach().item()         
         train_loss /= train_steps
-        scheduler.step()
         print('validation')
         combine_model.eval()
         with torch.no_grad():

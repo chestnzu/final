@@ -10,7 +10,7 @@
       "train_bs": 32,
       "eval_bs": 32,
       "num_layers":1,
-      "num_heads":4,
+      "num_heads":2,
       "learning_rate": 5e-4,
       "early_stopping_patience": 8
     },
