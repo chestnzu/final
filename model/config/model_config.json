@@ -3,7 +3,7 @@
     "default": {
       "fast_debug": false,
       "aspects": ["mf","bp","cc"],
-      "epoch_num":50,
+      "epoch_num":30,
       "train_limit": null,
       "val_limit": null,
       "test_limit": null,

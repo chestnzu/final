@@ -23,34 +23,16 @@ import random
 import os
 
 
-def set_seed(seed=42):
-    """
-    设置所有随机种子以确保可复现性
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # 如果使用多GPU
-
-    # 确保CUDA的确定性操作
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    # 设置环境变量
-    os.environ['PYTHONHASHSEED'] = str(seed)
-
-
 @ck.command()
 @ck.option('--aspect','-asp',default='mf',type=ck.Choice(['mf','cc','bp']),
            help='GO aspect')
 @ck.option('--deepgo2','-dp',is_flag=True,help='if deepgo2 model is used')
 @ck.option('--fastdataloader','-fdl',is_flag=True,help='if use fast dataloader from deepgo2')
-@ck.option('--protein_embedding_path','-ep',default='../data/esm_embeddings_3B_complete.pt')
+@ck.option('--protein_embedding_path','-ep',default='../data/esm_embeddings_3B_complete_2021&2025.pt')
 @ck.option('--go_embedding_path','-ge',default='../data/go_all_embeddings.pt')
 @ck.option('--seed','-s',default=42,type=int,help='Random seed for reproducibility')
-@ck.option('--loss','-l',default='focal',type=ck.Choice(['bce','focal','asymmetric']),
-           help='Loss function: bce, focal, or asymmetric (recommended for AUPR)')
+@ck.option('--loss','-l',default='focal',type=ck.Choice(['bce','focal','asymmetric','combined']),
+           help='Loss function: bce, focal, asymmetric, or combined (focal+bce)')
 @ck.option('--temperature','-t',is_flag=True,help='Use learnable temperature scaling for better calibration')
 
 
@@ -81,8 +63,9 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
     if deepgo2:
         protein_labels,protein_embeddings_all = load_deepgo2_data(data_root,'mf')
     else:
-        embedding_data=torch.load(protein_embedding_path)
+        embedding_data=torch.load(protein_embedding_path,)
         protein_labels,_,protein_embeddings_all=embedding_data.values()
+        protein_labels = protein_labels.tolist()
     protein_embeddings_all=protein_embeddings_all.to(device)
     ## dimension of protein features ##
     ## load context embedding ##
@@ -133,11 +116,11 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
 
     ## initialize loss function ##
     if loss == 'focal':
-        criterion = FocalLoss(alpha=0.25, gamma=1.6)
+        criterion = FocalLoss(alpha=0.2, gamma=2)
         print("Using Focal Loss (better for imbalanced data)")
-    elif loss == 'asymmetric':
-        criterion = AsymmetricLoss(gamma_neg=2, gamma_pos=0, clip=0.05, eps=1e-8)
-        print("Using Asymmetric Loss (optimized for AUPR) - Stable version")
+    elif loss == 'combined':
+        criterion = CombinedFocalBCELoss(alpha=0.2, gamma=2, focal_weight=0.7)
+        print(f"Using Combined Focal+BCE Loss (focal_weight=0.70, bce_weight=0.30)")
     else:
         criterion = lambda pred, target: F.binary_cross_entropy(pred, target)
         print("Using Binary Cross Entropy Loss")
@@ -146,7 +129,7 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
     best_val = float("inf")
     best_epoch = -1
     wait = 0
-    patience = 6
+    patience = 8
     min_delta = 1e-6
     #########################
 
@@ -155,7 +138,8 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,
     valid_labels = valid_labels.detach().cpu().numpy()
     test_labels = test_labels.detach().cpu().numpy()
     optimizer = torch.optim.Adam(combine_model.parameters(), lr=5e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.8)  ### new
+    # 使用 MultiStepLR: 在第10, 20, 30个epoch后降低学习率
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 20, 30], gamma=0.5)
     ### start training ###
     best_loss=100000.00
     for epoch in range(epoch_num):

@@ -121,10 +121,10 @@ class crossattentionfusion(nn.Module):
         self.attention = nn.MultiheadAttention(embed_dim=dim, num_heads=num_heads, dropout=dropout, batch_first=True)
         self.norm1 = nn.LayerNorm(dim, eps=1e-5)
         self.norm2 = nn.LayerNorm(dim, eps=1e-5)
-        self.ffn = nn.Sequential(nn.Linear(dim, dim * 4),
+        self.ffn = nn.Sequential(nn.Linear(dim, dim * 8),
                                  nn.ReLU(),
                                  nn.Dropout(dropout),
-                                 nn.Linear(dim * 4, dim),
+                                 nn.Linear(dim * 8, dim),
                                  nn.Dropout(dropout)
                                 )
 
@@ -146,14 +146,14 @@ class Combine_Transformer(nn.Module):
         self.use_temperature = use_temperature
         self.go_context = go_context.to(device)  # go_term_num * go_dim
         self.go_embedding_vector = nn.Parameter(embedding_vector.clone().detach())  # go_term_num * go_dim
+        #self.register_buffer('go_embedding_vector', embedding_vector.clone().detach())
         hidden_dim = self.go_context.shape[1]
-
         # fc1 with projection for residual connection (2560 -> hidden_dim)
-        self.fc1 = mlpblock(2560, hidden_dim, layer_norm=False, dropout=dropout).to(device)
-        self.fc1_5=Residual(mlpblock(hidden_dim, hidden_dim, layer_norm=False, dropout=dropout)).to(device)
+        self.fc1 = mlpblock(2560, hidden_dim, layer_norm=False, dropout=dropout,activation=nn.LeakyReLU()).to(device)
+        self.fc1_5=Residual(mlpblock(hidden_dim, hidden_dim, layer_norm=False, dropout=dropout,activation=nn.LeakyReLU())).to(device)
 
         # fc2 with residual connection (hidden_dim -> hidden_dim)
-        self.fc2 = Residual(mlpblock(hidden_dim, hidden_dim, layer_norm=False, dropout=dropout)).to(device)
+        self.fc2 = Residual(mlpblock(hidden_dim, hidden_dim, layer_norm=False, dropout=dropout,activation=nn.LeakyReLU())).to(device)
 
         self.go_bias = nn.Parameter(torch.zeros(self.go_context.shape[0])).to(device)
         self.training = True
@@ -180,7 +180,6 @@ class Combine_Transformer(nn.Module):
         # fc1 with projection residual: 2560 -> hidden_dim
         protein_vectors = self.fc1(protein_vectors)  # residual connection
         protein_vectors = self.fc1_5(protein_vectors)
-
         batch_size = protein_vectors.shape[0]
         go_matrix = self.go_context.unsqueeze(0).expand(batch_size, -1, -1)
         go_embeddings_transformed = self.go_embedding_vector

@@ -6,6 +6,7 @@ import networkx as nx
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 import numpy as np
+import random,os
 from evaluation import *
 from dataset_generating.basics import *
 from sklearn.metrics import roc_curve, auc
@@ -67,6 +68,23 @@ def load_protein_embeddings(protein_ids,embedding,label):
     embedding_batch = torch.stack(sequence_representations)
     return embedding_batch
 
+def set_seed(seed=42):
+    """
+    设置所有随机种子以确保可复现性
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # 如果使用多GPU
+
+    # 确保CUDA的确定性操作
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # 设置环境变量
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
 class FocalLoss(nn.Module):
     """
     Focal Loss for addressing class imbalance
@@ -82,6 +100,45 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-bce_loss)  # prevents nans when probability 0
         focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
         return focal_loss.mean()
+
+
+class CombinedFocalBCELoss(nn.Module):
+    """
+    Combined Focal Loss and BCE Loss
+    total_loss = focal_weight * focal_loss + (1-focal_weight) * bce_loss
+
+    This combines the benefits of:
+    - Focal Loss: handles class imbalance by focusing on hard examples
+    - BCE Loss: provides stable gradients and smooth optimization
+
+    Args:
+        alpha: focal loss parameter for balancing positive/negative samples
+        gamma: focal loss parameter for down-weighting easy examples
+        focal_weight: weight λ ∈ [0,1] for focal loss (default 0.7 means 70% focal, 30% BCE)
+    """
+    def __init__(self, alpha=0.25, gamma=2.0, focal_weight=0.7):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.focal_weight = focal_weight
+        self.bce_weight = 1.0 - focal_weight
+
+    def forward(self, inputs, targets):
+        # Calculate BCE loss (used in both components)
+        bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+
+        # Focal Loss component
+        pt = torch.exp(-bce_loss)  # probability of correct class
+        focal_term = self.alpha * (1 - pt) ** self.gamma
+        focal_loss = (focal_term * bce_loss).mean()
+
+        # Plain BCE loss
+        plain_bce = bce_loss.mean()
+
+        # Combine both losses
+        combined_loss = self.focal_weight * focal_loss + self.bce_weight * plain_bce
+
+        return combined_loss
 
 
 def build_dataset(dataset, term_dict,protein_embeddings, protein_labels,exp_only=False,fdl=False):

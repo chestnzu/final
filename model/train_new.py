@@ -28,9 +28,12 @@ from dataset_generating.basics import propagate_annots
 @ck.option('--fastdataloader','-fdl',is_flag=True,help='if use fast dataloader from deepgo2')
 @ck.option('--protein_embedding_path','-ep',default='../data/esm_embeddings_3B_complete_2021&2025.pt')
 @ck.option('--go_embedding_path','-ge',default='../data/go_all_embeddings.pt')
+@ck.option('--seed','-s',default=42,type=int,help='Random seed for reproducibility')
+@ck.option('--temperature','-t',is_flag=True,help='Use learnable temperature scaling for better calibration')
 
-
-def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path):
+def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path,seed,temperature):
+    set_seed(seed)
+    print(f'Random seed set to: {seed}')
     if deepgo2:
         onto_path = '../../deepgo2/data/go.obo'
         data_root = '../../deepgo2/data'
@@ -58,6 +61,7 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path)
     else:
         embedding_data=torch.load(protein_embedding_path,weights_only=False)
         protein_labels,_,protein_embeddings_all=embedding_data.values()
+        protein_labels = protein_labels.tolist()
     protein_embeddings_all=protein_embeddings_all.to(device)
     ## dimension of protein features ##
     ## load context embedding ##
@@ -89,14 +93,14 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path)
     test_labels = test_dataset.annotations
 
     ## initialize model ##
-    combine_model=Combine_Transformer(num_heads=num_heads,go_context=go_context_embeddings,embedding_vector=go_embeddings,device=device,num_layers=num_layers).to(device)  ## Cross attention model
+    combine_model=Combine_Transformer(num_heads=num_heads,go_context=go_context_embeddings,embedding_vector=go_embeddings,device=device,num_layers=num_layers,use_temperature=temperature).to(device)  ## Cross attention model
     print(combine_model)
     print(f"Training config: num_heads={num_heads}, num_layers={num_layers}, lr={learning_rate}")
     train_labels = train_labels.detach().cpu().numpy()
     valid_labels = valid_labels.detach().cpu().numpy()
     test_labels = test_labels.detach().cpu().numpy()
     optimizer = torch.optim.Adam(combine_model.parameters(), lr=learning_rate)
-
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[12], gamma=0.1)
     ### start training ###
     best_loss=100000.00
     patience_counter = 0
@@ -117,7 +121,7 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path)
                 optimizer.step()
                 train_loss += loss.detach().item()         
         train_loss /= train_steps
-
+        scheduler.step()
         print('validation')
         combine_model.eval()
         with torch.no_grad():
@@ -173,7 +177,7 @@ def main(aspect,deepgo2,fastdataloader,protein_embedding_path,go_embedding_path)
     with Pool(32) as p:
         preds=p.map(partial(propagate_annots,go=go,terms_dict=terms_dict),preds)
     test_df['preds'] = preds
-    test_df.to_pickle(f'{data_root}/{aspect}/predictions_esm2_context.pkl')
+    test_df.to_pickle(f'{data_root}/{aspect}/predictions_esm2_context_new.pkl')
 
 if __name__ == '__main__':
     main()
